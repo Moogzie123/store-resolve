@@ -1,15 +1,17 @@
 # StoreResolve
 
-Complaint operations for a seven-location Dunkin franchise group. The current build demonstrates the complete local workflow while keeping every outbound notification safely disabled.
+Persistent complaint operations for a seven-location Dunkin franchise group. The React client now uses an authenticated Hono Worker API; Cloudflare D1 is the authoritative store for complaints, events, notifications, contacts, and rollout controls.
 
-## Quick start
+## Local development
 
 ```bash
 pnpm install
+pnpm build
+pnpm db:migrate:local
 pnpm dev
 ```
 
-Use the user selector in the header to move between owner, view-only, and store-manager experiences. Create cases through **Simulator**. Default mode is `MOCK`; `external_notifications_enabled` is false.
+`pnpm dev` uses the explicitly local-only `DEV_AUTH_USER_ID=father` binding. Production never exposes the role simulator; identity comes from Cloudflare Access.
 
 ## Verification
 
@@ -19,10 +21,10 @@ pnpm lint
 pnpm typecheck
 pnpm test
 pnpm build
-pnpm exec playwright install chromium
+pnpm build:worker
 pnpm test:e2e
 ```
 
-The browser demo uses in-memory state by design. The production persistence target is the checked-in D1 migration and Worker boundary. See [Architecture](docs/ARCHITECTURE.md), [Deployment](docs/DEPLOYMENT.md), and [Next steps](docs/NEXT_STEPS.md).
+The Playwright suite exercises the Worker+D1 path, refresh persistence, separate authenticated sessions, authorization, and the test-message confirmation guard. No live SMS is sent by tests. Default production state is `FAMILY_PILOT` with external notifications disabled.
 
 No real customer information, phone numbers, email addresses, or credentials belong in this repository.

@@ -4,14 +4,19 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "wrangler dev --local --var DEV_AUTH_USER_ID:father",
+    "dev:web": "vite",
     "build": "tsc -b && vite build --configLoader runner",
+    "build:worker": "vite build --config vite.worker.config.ts --configLoader runner",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run --configLoader runner",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "db:migrate:local": "wrangler d1 migrations apply store-resolve --local",
+    "db:migrate:remote": "wrangler d1 migrations apply store-resolve --remote",
+    "deploy": "pnpm build && wrangler deploy"
   },
   "dependencies": {
     "@hono/zod-validator": "^0.7.2",
@@ -19,6 +24,7 @@
     "drizzle-orm": "^0.44.5",
     "hono": "^4.9.4",
     "lucide-react": "^0.539.0",
+    "miniflare": "^4.20250906.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "react-router-dom": "^7.8.0",

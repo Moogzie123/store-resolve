@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   AlertTriangle,
   ArrowLeft,
@@ -17,7 +17,8 @@ import {
   Store as StoreIcon,
   Users,
 } from 'lucide-react'
-import { createComplaint, metrics, processDeadlines, updateComplaint } from './lib/workflow'
+import { metrics } from './lib/workflow'
+import { api } from './lib/api'
 import { fixtures, initialState } from './lib/seed'
 import type { AppState, Complaint, NewComplaint, Severity } from './lib/types'
 
@@ -50,6 +51,8 @@ function Avatar({ name }: { name: string }) {
 
 export default function App() {
   const [state, setState] = useState<AppState>(initialState)
+  const [loading, setLoading] = useState(true)
+  const [providerReady, setProviderReady] = useState(false)
   const [view, setView] = useState<View>('dashboard')
   const [selectedId, setSelectedId] = useState<string>()
   const [toast, setToast] = useState<string>()
@@ -68,6 +71,35 @@ export default function App() {
     user.role === 'STORE_MANAGER'
       ? state.complaints.filter((c) => c.assignedManagerId === user.id)
       : state.complaints
+  useEffect(() => {
+    api
+      .bootstrap()
+      .then((result) => {
+        setState(result.state)
+        setProviderReady(result.providerReady)
+      })
+      .catch((error: Error) => show(error.message))
+      .finally(() => setLoading(false))
+  }, [])
+  useEffect(() => {
+    if (loading) return
+    const timer = window.setInterval(
+      () =>
+        api
+          .bootstrap()
+          .then((result) => setState(result.state))
+          .catch(() => undefined),
+      10_000,
+    )
+    return () => window.clearInterval(timer)
+  }, [loading])
+  if (loading)
+    return (
+      <div className="loading-screen">
+        <ShieldCheck />
+        <strong>Loading secure workspace…</strong>
+      </div>
+    )
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -157,17 +189,9 @@ export default function App() {
               <Bell />
               <i />
             </button>
-            <select
-              aria-label="Act as user"
-              value={state.activeUserId}
-              onChange={(e) => setState({ ...state, activeUserId: e.target.value })}
-            >
-              {state.users.map((u) => (
-                <option key={u.id} value={u.id}>
-                  View as {u.name}
-                </option>
-              ))}
-            </select>
+            <span className="session-user">
+              <ShieldCheck /> Signed in as {user.name}
+            </span>
           </div>
         </header>
         <div className="page">
@@ -187,15 +211,18 @@ export default function App() {
           {view === 'simulator' && (
             <Simulator
               state={state}
-              onCreate={(input) => {
-                const result = createComplaint(state, input)
-                setState(result.state)
-                show(
-                  result.duplicate
-                    ? 'Follow-up attached to existing case'
-                    : 'Complaint created and workflow started',
-                )
-                navigate('detail', result.complaint.id)
+              onCreate={async (input) => {
+                try {
+                  const next = await api.createComplaint(input)
+                  setState(next)
+                  const created = next.complaints.find(
+                    (c) => c.externalCaseId === input.externalCaseId,
+                  )
+                  show('Complaint persisted and workflow started')
+                  if (created) navigate('detail', created.id)
+                } catch (error) {
+                  show((error as Error).message)
+                }
               }}
             />
           )}
@@ -204,26 +231,49 @@ export default function App() {
               complaint={selected}
               state={state}
               onBack={() => navigate('complaints')}
-              onAct={(action, data) => {
-                try {
-                  setState(updateComplaint(state, selected.id, action, state.activeUserId, data))
-                  show('Case updated successfully')
-                } catch (e) {
-                  show((e as Error).message)
-                }
-              }}
+              onAct={(action, data) =>
+                api
+                  .act(selected.id, action, data)
+                  .then((next) => {
+                    setState(next)
+                    show('Case update persisted')
+                  })
+                  .catch((error: Error) => show(error.message))
+              }
             />
           )}
           {view === 'settings' && (
             <PilotControls
               state={state}
               setState={setState}
-              onRun={() => {
-                setState(
-                  processDeadlines(state, new Date(Date.now() + 3 * 24 * 3600000).toISOString()),
-                )
-                show('Test clock advanced by 3 days; deadlines processed')
-              }}
+              providerReady={providerReady}
+              onRun={() =>
+                api
+                  .processDeadlines(72)
+                  .then((next) => {
+                    setState(next)
+                    show('Persistent deadlines processed')
+                  })
+                  .catch((error: Error) => show(error.message))
+              }
+              onSaveConfig={(config) =>
+                api
+                  .updateConfig(config)
+                  .then((next) => {
+                    setState(next)
+                    show('Safety configuration saved')
+                  })
+                  .catch((error: Error) => show(error.message))
+              }
+              onSendTest={(id) =>
+                api
+                  .sendTest(id)
+                  .then((next) => {
+                    setState(next)
+                    show('Test attempt recorded')
+                  })
+                  .catch((error: Error) => show(error.message))
+              }
             />
           )}
         </div>
@@ -934,12 +984,25 @@ function PilotControls({
   state,
   setState,
   onRun,
+  providerReady,
+  onSaveConfig,
+  onSendTest,
 }: {
   state: AppState
   setState: (s: AppState) => void
   onRun: () => void
+  providerReady: boolean
+  onSaveConfig: (config: AppState['config']) => void
+  onSendTest: (id: 'father' | 'uncle' | 'grandfather') => void
 }) {
   const owners = state.users.filter((u) => ['father', 'uncle', 'grandfather'].includes(u.id))
+  const [recipient, setRecipient] = useState<'father' | 'uncle' | 'grandfather'>('father')
+  const [confirmed, setConfirmed] = useState(false)
+  const chosen = owners.find((owner) => owner.id === recipient)!
+  const recentTests = state.testNotifications
+    .filter((notification) => notification.recipientUserId === recipient)
+    .slice(-3)
+    .reverse()
   return (
     <>
       <PageTitle
@@ -955,9 +1018,9 @@ function PilotControls({
             <select
               value={state.config.mode}
               onChange={(e) =>
-                setState({
-                  ...state,
-                  config: { ...state.config, mode: e.target.value as AppState['config']['mode'] },
+                onSaveConfig({
+                  ...state.config,
+                  mode: e.target.value as AppState['config']['mode'],
                 })
               }
             >
@@ -977,12 +1040,9 @@ function PilotControls({
             <button
               className={cx('toggle', state.config.externalNotificationsEnabled && 'on')}
               onClick={() =>
-                setState({
-                  ...state,
-                  config: {
-                    ...state.config,
-                    externalNotificationsEnabled: !state.config.externalNotificationsEnabled,
-                  },
+                onSaveConfig({
+                  ...state.config,
+                  externalNotificationsEnabled: !state.config.externalNotificationsEnabled,
                 })
               }
             >
@@ -1003,30 +1063,9 @@ function PilotControls({
         </section>
         <section className="panel settings-card">
           <h2>Ownership recipients</h2>
-          <p>Fictional placeholders only. Contact information is never committed here.</p>
+          <p>Contact values live only in D1 and are returned masked.</p>
           {owners.map((owner) => (
-            <div className="recipient" key={owner.id}>
-              <Avatar name={owner.name} />
-              <div>
-                <strong>{owner.name}</strong>
-                <span>{owner.phone.replace(/.(?=.{4})/g, '•')}</span>
-              </div>
-              <label className="mini-toggle">
-                SMS{' '}
-                <input
-                  type="checkbox"
-                  checked={owner.smsEnabled}
-                  onChange={(e) =>
-                    setState({
-                      ...state,
-                      users: state.users.map((u) =>
-                        u.id === owner.id ? { ...u, smsEnabled: e.target.checked } : u,
-                      ),
-                    })
-                  }
-                />
-              </label>
-            </div>
+            <OwnerContact key={owner.id} owner={owner} onSaved={setState} />
           ))}
         </section>
         <section className="panel settings-card">
@@ -1046,17 +1085,170 @@ function PilotControls({
             Select exactly one ownership recipient. The provider will suppress the send unless every
             safety gate is open.
           </p>
-          <select>
-            <option>Father · ••••0001</option>
-            <option>Uncle · ••••0002</option>
-            <option>Grandfather · ••••0003</option>
+          <select
+            value={recipient}
+            onChange={(e) => {
+              setRecipient(e.target.value as typeof recipient)
+              setConfirmed(false)
+            }}
+          >
+            {owners.map((owner) => (
+              <option value={owner.id} key={owner.id}>
+                {owner.name} · {owner.phone}
+              </option>
+            ))}
           </select>
-          <button className="secondary" disabled>
-            Confirm harmless test message
+          <div className="readiness-list">
+            <span>
+              Rollout mode <strong>{state.config.mode}</strong>
+            </span>
+            <span>
+              External notifications{' '}
+              <strong>{state.config.externalNotificationsEnabled ? 'ENABLED' : 'DISABLED'}</strong>
+            </span>
+            <span>
+              Twilio provider <strong>{providerReady ? 'READY' : 'NOT READY'}</strong>
+            </span>
+            <span>
+              Destination <strong>{chosen.phone}</strong>
+            </span>
+          </div>
+          <label className="confirm-row">
+            <input
+              type="checkbox"
+              checked={confirmed}
+              onChange={(e) => setConfirmed(e.target.checked)}
+            />{' '}
+            I confirm one harmless test to {chosen.name}
+          </label>
+          <button
+            className="secondary"
+            disabled={!confirmed}
+            onClick={() => {
+              onSendTest(recipient)
+              setConfirmed(false)
+            }}
+          >
+            Send one confirmed test
           </button>
-          <small>Twilio credentials are not configured.</small>
+          <small>
+            No manager or send-to-all target exists. The server rechecks every safety gate.
+          </small>
+          {recentTests.length > 0 && (
+            <div className="test-results">
+              <strong>Recent delivery state</strong>
+              {recentTests.map((notification) => (
+                <div key={notification.id}>
+                  <span>{fmt(notification.createdAt)}</span>
+                  <Badge
+                    tone={
+                      notification.status === 'DELIVERED'
+                        ? 'safe'
+                        : notification.status === 'FAILED' || notification.status === 'UNDELIVERED'
+                          ? 'danger'
+                          : 'warning'
+                    }
+                  >
+                    {notification.status}
+                  </Badge>
+                </div>
+              ))}
+            </div>
+          )}
         </section>
       </div>
     </>
+  )
+}
+
+function OwnerContact({
+  owner,
+  onSaved,
+}: {
+  owner: AppState['users'][number]
+  onSaved: (state: AppState) => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState({
+    name: owner.name,
+    email: '',
+    phone: '',
+    smsEnabled: owner.smsEnabled,
+    active: owner.active,
+  })
+  if (!editing)
+    return (
+      <div className="recipient">
+        <Avatar name={owner.name} />
+        <div>
+          <strong>{owner.name}</strong>
+          <span>
+            {owner.phone} · {owner.email}
+          </span>
+        </div>
+        <Badge tone={owner.smsEnabled ? 'safe' : 'warning'}>
+          {owner.smsEnabled ? 'SMS ON' : 'SMS OFF'}
+        </Badge>
+        <button className="text-button" onClick={() => setEditing(true)}>
+          Configure
+        </button>
+      </div>
+    )
+  return (
+    <div className="contact-editor">
+      <label>
+        Name
+        <input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
+      </label>
+      <label>
+        New email
+        <input
+          type="email"
+          placeholder="name@example.com"
+          value={draft.email}
+          onChange={(e) => setDraft({ ...draft, email: e.target.value })}
+        />
+      </label>
+      <label>
+        New phone
+        <input
+          placeholder="+15551234567"
+          value={draft.phone}
+          onChange={(e) => setDraft({ ...draft, phone: e.target.value })}
+        />
+      </label>
+      <label>
+        <input
+          type="checkbox"
+          checked={draft.smsEnabled}
+          onChange={(e) => setDraft({ ...draft, smsEnabled: e.target.checked })}
+        />{' '}
+        SMS enabled
+      </label>
+      <label>
+        <input
+          type="checkbox"
+          checked={draft.active}
+          onChange={(e) => setDraft({ ...draft, active: e.target.checked })}
+        />{' '}
+        Active
+      </label>
+      <div>
+        <button className="secondary" onClick={() => setEditing(false)}>
+          Cancel
+        </button>
+        <button
+          className="primary"
+          onClick={() =>
+            api.updateContact(owner.id, draft).then((state) => {
+              onSaved(state)
+              setEditing(false)
+            })
+          }
+        >
+          Save securely
+        </button>
+      </div>
+    </div>
   )
 }

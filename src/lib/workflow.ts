@@ -38,7 +38,7 @@ function eligibility(
   if (!config.externalNotificationsEnabled)
     return {
       status: 'SUPPRESSED',
-      reason: 'Global external notifications are disabled',
+      reason: 'EXTERNAL_NOTIFICATIONS_DISABLED',
       provider: 'MOCK',
     }
   if (config.mode === 'MOCK')
@@ -49,7 +49,7 @@ function eligibility(
   if (config.mode === 'FAMILY_PILOT' && !owner)
     return {
       status: 'SUPPRESSED',
-      reason: 'Manager SMS is suppressed in FAMILY_PILOT',
+      reason: 'FAMILY_PILOT',
       provider: 'MOCK',
     }
   if (config.mode === 'SINGLE_STORE_PILOT' && !owner && storeId !== config.pilotStoreId)

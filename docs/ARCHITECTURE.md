@@ -1,21 +1,23 @@
 # Architecture
 
-## Shape
+## Runtime
 
-- React + TypeScript + Vite responsive web client.
-- Framework-independent domain workflow in `src/lib/workflow.ts`.
-- Hono Cloudflare Worker boundary in `worker/index.ts`.
-- Drizzle schema and D1 SQL migration in `worker/schema.ts` and `drizzle/0001_initial.sql`.
-- Notification and email provider interfaces in `worker/providers.ts`.
+- React + TypeScript + Vite client, served as Worker static assets.
+- Hono Worker API with Zod request validation.
+- Cloudflare D1 as the authoritative application database.
+- Framework-independent transition functions in `src/lib/workflow.ts` reused by simulator/API ingestion.
+- D1 hydration/persistence adapter in `worker/d1.ts`.
+- Cloudflare Access identity adapter in `worker/auth.ts`.
+- Twilio adapter and signature verification in `worker/providers.ts`.
 
-The simulator calls the same `createComplaint` service intended for Gmail ingestion. Business logic does not import Gmail or Twilio. Every transition creates a chronological event. Each notification recipient receives a separate record.
+The browser loads `/api/bootstrap` and sends every mutation to the Worker. Refreshing or opening another browser rehydrates from D1. Events and per-recipient notification records use stable IDs and `INSERT OR IGNORE`; deadline flags prevent repeated escalation effects.
 
-## Security model
+## Authentication and authorization
 
-The domain service enforces owner-only close/reopen actions, manager assignment for operational actions, and view-only restrictions. A production deployment must place an identity-aware authentication layer in front of the Worker and derive the active user from verified session claims; the demo's user selector is explicitly a local role simulator, not production authentication.
+Cloudflare Access is the session boundary. After Access validates the user, the Worker maps `Cf-Access-Authenticated-User-Email` to an active D1 user. Access must protect the Worker hostname so clients cannot supply this header directly. The complaint domain remains independent of authentication.
 
-External delivery has layered backend gates: global switch, rollout mode, recipient SMS setting, recipient role, and pilot store. MOCK mode and the default global switch prevent network delivery.
+Owners may view all stores and perform administrative mutations. View-only users receive all-store read access but fail owner mutations. Managers receive only complaints assigned to their user ID and cannot mutate other stores. `DEV_AUTH_USER_ID` exists solely for local Wrangler development and must never be set in production.
 
-## State and deadlines
+## Notification safety
 
-Workflow status and overdue flags are independent. Deadline processing checks durable flags before emitting events and alerts, making repeated cron runs idempotent. Production Cron should invoke the deadline processor against D1 in a transaction.
+Eligibility is checked server-side immediately before provider invocation. The D1 kill switch overrides severity and mode. In `FAMILY_PILOT`, only `father`, `uncle`, and `grandfather` are valid external recipients; manager records remain auditable as `SUPPRESSED / FAMILY_PILOT`. Twilio acceptance produces `SENT`, not `DELIVERED`. Signed, idempotent callbacks set final status.

@@ -63,6 +63,7 @@ export const initialState: AppState = {
   complaints: initialComplaints,
   config: { mode: 'MOCK', externalNotificationsEnabled: false },
   activeUserId: 'father',
+  testNotifications: [],
 }
 
 export const fixtures = [

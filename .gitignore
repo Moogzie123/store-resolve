@@ -7,6 +7,7 @@ dist/
 .wrangler/
 playwright-report/
 test-results/
+work/
 *.tsbuildinfo
 *.pem
 *.key

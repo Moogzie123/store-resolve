@@ -1,26 +1,86 @@
-import { expect, test } from '@playwright/test'
-test('normal workflow moves from simulation to manager resolution and owner close', async ({
-  page,
-}) => {
+import { expect, request, test } from '@playwright/test'
+
+const identity = async (page: import('@playwright/test').Page, email: string) => {
+  await page.setExtraHTTPHeaders({ 'Cf-Access-Authenticated-User-Email': email })
+  await page.reload()
+}
+
+test('D1 lifecycle survives refresh and separate authenticated sessions', async ({ page }) => {
   await page.goto('/')
   await page.getByRole('button', { name: /new simulated complaint/i }).click()
   await page.getByRole('button', { name: /process complaint/i }).click()
-  await expect(page.getByText('Customer complaint')).toBeVisible()
-  await page.getByLabel('Act as user').selectOption('manager-1')
+  const caseId = (
+    await page
+      .getByText(/SR-\d{4}-\d{4}/)
+      .first()
+      .textContent()
+  )?.match(/SR-\d{4}-\d{4}/)?.[0]
+  expect(caseId).toBeTruthy()
+  await page.reload()
+  await expect(page.getByText(caseId!)).toBeVisible()
+  await identity(page, 'manager1@example.invalid')
+  await page.getByRole('button', { name: 'Complaints' }).click()
+  await page.getByText(caseId!).first().click()
   await page.getByRole('button', { name: 'Acknowledge complaint' }).click()
   await page.getByRole('button', { name: 'Start investigation' }).click()
   await page.getByRole('button', { name: 'Record customer contact' }).click()
   await page.getByRole('button', { name: 'Submit resolution' }).click()
-  await page.getByLabel('Act as user').selectOption('father')
+  await page.reload()
+  await expect(page.getByText('RESOLUTION SUBMITTED', { exact: true })).toBeVisible()
+  await identity(page, 'father@example.invalid')
+  await page.getByRole('button', { name: 'Complaints' }).click()
+  await page.getByText(caseId!).first().click()
   await page.getByRole('button', { name: 'Close complaint' }).click()
+  await page.reload()
   await expect(page.getByText('CLOSED', { exact: true })).toBeVisible()
 })
-test('deadline test clock surfaces owner escalation', async ({ page }) => {
+
+test('persistent deadline escalation is idempotent and visible after refresh', async ({ page }) => {
   await page.goto('/')
   await page.getByRole('button', { name: /new simulated complaint/i }).click()
   await page.getByRole('button', { name: /process complaint/i }).click()
   await page.getByRole('button', { name: /pilot controls/i }).click()
   await page.getByRole('button', { name: /advance 3 days/i }).click()
+  await page.getByRole('button', { name: /advance 3 days/i }).click()
   await page.getByRole('button', { name: 'Overview' }).click()
-  await expect(page.getByText('Manager acknowledgment overdue')).toBeVisible()
+  await page.reload()
+  await expect(page.getByText('Manager acknowledgment overdue').first()).toBeVisible()
+})
+
+test('view-only and manager store isolation are enforced by API', async () => {
+  const grandfather = await request.newContext({
+    extraHTTPHeaders: { 'Cf-Access-Authenticated-User-Email': 'grandfather@example.invalid' },
+  })
+  const bootstrap = await grandfather.get('/api/bootstrap')
+  expect(bootstrap.ok()).toBeTruthy()
+  const state = (await bootstrap.json()).state
+  const complaint = state.complaints[0]
+  if (complaint) {
+    const denied = await grandfather.post(`/api/complaints/${complaint.id}/actions`, {
+      data: { action: 'CLOSE', data: {} },
+    })
+    expect(denied.status()).toBe(403)
+  }
+  const manager2 = await request.newContext({
+    extraHTTPHeaders: { 'Cf-Access-Authenticated-User-Email': 'manager2@example.invalid' },
+  })
+  const managerState = (await (await manager2.get('/api/bootstrap')).json()).state
+  expect(
+    managerState.complaints.every(
+      (c: { assignedManagerId?: string }) => c.assignedManagerId === 'manager-2',
+    ),
+  ).toBe(true)
+})
+
+test('manual test UI has only owners and requires confirmation', async ({ page }) => {
+  await page.goto('/')
+  await page.getByRole('button', { name: /pilot controls/i }).click()
+  const options = await page
+    .locator('.settings-card')
+    .filter({ hasText: 'Test notification' })
+    .locator('option')
+    .allTextContents()
+  expect(options).toHaveLength(3)
+  expect(options.join(' ')).not.toContain('Manager')
+  await expect(page.getByRole('button', { name: 'Send one confirmed test' })).toBeDisabled()
 })

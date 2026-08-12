@@ -69,6 +69,7 @@ export const complaints = sqliteTable('complaints', {
   customerContactOutcome: text('customer_contact_outcome'),
   correctiveAction: text('corrective_action'),
   resolutionNotes: text('resolution_notes'),
+  followUps: text('follow_ups', { mode: 'json' }).notNull().default([]),
   ...timestamps,
 })
 export const complaintEvents = sqliteTable('complaint_events', {
@@ -103,4 +104,17 @@ export const settings = sqliteTable('settings', {
   key: text('key').primaryKey(),
   value: text('value').notNull(),
   updatedAt: text('updated_at').notNull(),
+})
+export const notificationCallbacks = sqliteTable('notification_callbacks', {
+  id: text('id').primaryKey(),
+  providerMessageId: text('provider_message_id').notNull(),
+  status: text('status').notNull(),
+  receivedAt: text('received_at').notNull(),
+  payload: text('payload', { mode: 'json' }).notNull(),
+})
+export const testNotificationRateLimits = sqliteTable('test_notification_rate_limits', {
+  recipientUserId: text('recipient_user_id')
+    .primaryKey()
+    .references(() => users.id),
+  lastSentAt: text('last_sent_at').notNull(),
 })

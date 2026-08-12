@@ -9,11 +9,22 @@
 - [x] Family pilot controls: four modes, global kill switch, fictional recipient controls, provider boundary, manager suppression.
 - [x] Unit tests, browser workflow specifications, CI, documentation, and production build configuration.
 
-## Remaining production hardening
+## Persistence and family pilot milestone
 
-- [ ] Replace browser memory adapter with authenticated Worker API and D1 repository implementation.
-- [ ] Configure production identity provider/session validation.
-- [ ] Provision D1 and Cloudflare deployment bindings.
-- [ ] Add Twilio credentials only through Cloudflare secrets; implement delivery-status webhook validation.
-- [ ] Install and run Playwright browsers in the deployment environment.
-- [ ] Complete family SMS pilot before Gmail or manager messaging activation.
+- [x] Replace browser authority with typed Worker API and D1 repository.
+- [x] Persist complaints, events, notifications, actions, contacts, and rollout configuration.
+- [x] Map authenticated Cloudflare Access identities to D1 roles.
+- [x] Enforce owner, view-only, and manager-store authorization server-side.
+- [x] Implement Twilio send, provider IDs, signed status callbacks, and callback idempotency.
+- [x] Enforce FAMILY_PILOT and the global kill switch immediately before Twilio.
+- [x] Add secure masked ownership configuration and a confirmed, rate-limited, single-recipient test UI.
+- [x] Add migration, deployment, Access, Twilio, and first-test runbooks.
+
+## Remaining external operations
+
+- [ ] Provision the Cloudflare D1 database and replace the placeholder binding ID.
+- [ ] Deploy and protect the Worker with Cloudflare Access.
+- [ ] Configure Twilio secrets and one real owner in D1.
+- [ ] Complete one-phone live SMS delivery validation.
+- [ ] Test Father, Uncle, and Grandfather individually.
+- [ ] Connect Gmail only after family SMS validation succeeds.

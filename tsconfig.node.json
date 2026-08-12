@@ -11,9 +11,10 @@
   },
   "include": [
     "vite.config.ts",
+    "vite.worker.config.ts",
     "eslint.config.js",
     "playwright.config.ts",
     "worker",
-    "src/lib/types.ts"
+    "src/lib"
   ]
 }

@@ -2,8 +2,13 @@ name = "store-resolve"
 main = "worker/index.ts"
 compatibility_date = "2026-08-01"
 
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
 [vars]
-NOTIFICATION_MODE = "MOCK"
+NOTIFICATION_MODE = "FAMILY_PILOT"
 EXTERNAL_NOTIFICATIONS_ENABLED = "false"
 
 [[d1_databases]]
@@ -11,4 +16,3 @@ binding = "DB"
 database_name = "store-resolve"
 database_id = "replace-after-d1-create"
 migrations_dir = "drizzle"
-

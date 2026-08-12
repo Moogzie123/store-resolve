@@ -2,7 +2,8 @@ export type Role = 'OWNER' | 'VIEW_ONLY' | 'STORE_MANAGER' | 'ADMIN'
 export type Severity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
 export type Status =
   'NEW' | 'MANAGER_NOTIFIED' | 'ACKNOWLEDGED' | 'INVESTIGATING' | 'RESOLUTION_SUBMITTED' | 'CLOSED'
-export type NotificationStatus = 'PENDING' | 'SENT' | 'DELIVERED' | 'FAILED' | 'SUPPRESSED'
+export type NotificationStatus =
+  'PENDING' | 'SENT' | 'DELIVERED' | 'FAILED' | 'UNDELIVERED' | 'SUPPRESSED'
 export type RolloutMode = 'MOCK' | 'FAMILY_PILOT' | 'SINGLE_STORE_PILOT' | 'FULL'
 export type EventType =
   | 'COMPLAINT_RECEIVED'
@@ -61,6 +62,7 @@ export interface Notification {
   message: string
   status: NotificationStatus
   provider: 'MOCK' | 'TWILIO'
+  providerMessageId?: string
   createdAt: string
   sentAt?: string
   deliveredAt?: string
@@ -112,6 +114,16 @@ export interface AppState {
   complaints: Complaint[]
   config: AppConfig
   activeUserId: string
+  testNotifications: Notification[]
+}
+export interface SessionUser extends User {
+  maskedPhone: string
+  maskedEmail: string
+}
+export interface BootstrapResponse {
+  state: AppState
+  currentUser: SessionUser
+  providerReady: boolean
 }
 export interface NewComplaint {
   externalCaseId: string
