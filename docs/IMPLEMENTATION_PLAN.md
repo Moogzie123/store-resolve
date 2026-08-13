@@ -15,16 +15,16 @@
 - [x] Persist complaints, events, notifications, actions, contacts, and rollout configuration.
 - [x] Map authenticated Cloudflare Access identities to D1 roles.
 - [x] Enforce owner, view-only, and manager-store authorization server-side.
-- [x] Implement Twilio send, provider IDs, signed status callbacks, and callback idempotency.
-- [x] Enforce FAMILY_PILOT and the global kill switch immediately before Twilio.
+- [x] Implement SignalWire send, provider IDs, authenticated status verification, and callback idempotency.
+- [x] Enforce FAMILY_PILOT and the global kill switch immediately before SignalWire.
 - [x] Add secure masked ownership configuration and a confirmed, rate-limited, single-recipient test UI.
-- [x] Add migration, deployment, Access, Twilio, and first-test runbooks.
+- [x] Add migration, deployment, Access, SignalWire, and first-test runbooks.
 
 ## Remaining external operations
 
-- [ ] Provision the Cloudflare D1 database and replace the placeholder binding ID.
-- [ ] Deploy and protect the Worker with Cloudflare Access.
-- [ ] Configure Twilio secrets and one real owner in D1.
+- [x] Provision the Cloudflare D1 database and production binding.
+- [x] Deploy and protect the Worker with Cloudflare Access.
+- [ ] Configure SignalWire secrets and one real owner in D1.
 - [ ] Complete one-phone live SMS delivery validation.
 - [ ] Test Father, Uncle, and Grandfather individually.
 - [ ] Connect Gmail only after family SMS validation succeeds.

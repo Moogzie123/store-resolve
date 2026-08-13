@@ -63,7 +63,8 @@ describe('independent notification safety', () => {
     state.config = { mode: 'FAMILY_PILOT', externalNotificationsEnabled: true }
     state.users = state.users.map((u) => ({ ...u, smsEnabled: true }))
     const c = create().complaint
-    expect(c.notifications.find((n) => n.recipientUserId === 'father')?.status).toBe('SENT')
+    expect(c.notifications.find((n) => n.recipientUserId === 'father')?.status).toBe('PENDING')
+    expect(c.notifications.find((n) => n.recipientUserId === 'father')?.provider).toBe('SIGNALWIRE')
     expect(c.notifications.find((n) => n.recipientUserId === 'manager-1')?.status).toBe(
       'SUPPRESSED',
     )

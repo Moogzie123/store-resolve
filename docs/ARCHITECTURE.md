@@ -8,7 +8,7 @@
 - Framework-independent transition functions in `src/lib/workflow.ts` reused by simulator/API ingestion.
 - D1 hydration/persistence adapter in `worker/d1.ts`.
 - Cloudflare Access identity adapter in `worker/auth.ts`.
-- Twilio adapter and signature verification in `worker/providers.ts`.
+- SignalWire Compatibility API adapter and authenticated callback verification in `worker/providers.ts`.
 
 The browser loads `/api/bootstrap` and sends every mutation to the Worker. Refreshing or opening another browser rehydrates from D1. Events and per-recipient notification records use stable IDs and `INSERT OR IGNORE`; deadline flags prevent repeated escalation effects.
 
@@ -20,4 +20,6 @@ Owners may view all stores and perform administrative mutations. View-only users
 
 ## Notification safety
 
-Eligibility is checked server-side immediately before provider invocation. The D1 kill switch overrides severity and mode. In `FAMILY_PILOT`, only `father`, `uncle`, and `grandfather` are valid external recipients; manager records remain auditable as `SUPPRESSED / FAMILY_PILOT`. Twilio acceptance produces `SENT`, not `DELIVERED`. Signed, idempotent callbacks set final status.
+Eligibility is checked server-side immediately before provider invocation. The D1 kill switch overrides severity and mode. In `FAMILY_PILOT`, only `father`, `uncle`, and `grandfather` are valid external recipients; manager records remain auditable as `SUPPRESSED / FAMILY_PILOT`. SignalWire acceptance produces `SENT`, not `DELIVERED`.
+
+SignalWire's documented SMS status callback does not define a callback signature. The public callback accepts only a UUID message ID, retrieves that message from SignalWire with server-held credentials, and verifies its project, sender, and stored recipient before any D1 status mutation. Callback records are idempotent, and terminal delivery states cannot regress.

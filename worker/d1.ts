@@ -78,6 +78,7 @@ export async function loadState(db: D1Database): Promise<AppState> {
       message: String(r.message),
       status: r.status as Notification['status'],
       provider: r.provider as Notification['provider'],
+      providerMessageId: r.provider_message_id ? String(r.provider_message_id) : undefined,
       createdAt: String(r.created_at),
       sentAt: r.sent_at ? String(r.sent_at) : undefined,
       deliveredAt: r.delivered_at ? String(r.delivered_at) : undefined,

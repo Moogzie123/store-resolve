@@ -3,7 +3,7 @@
 The rollout order is fixed:
 
 1. Complete local application workflow.
-2. Connect Twilio.
+2. Connect SignalWire.
 3. Test live SMS with Father, Uncle, and Grandfather.
 4. Connect Dunkin complaint Gmail inbox.
 5. Enable automatic Dunkin acknowledgment.
@@ -11,4 +11,4 @@ The rollout order is fixed:
 7. Roll out manager messaging to all seven stores.
 8. Add enhancements only after the core workflow is proven.
 
-Before step 3, provision authenticated production access, the D1 database, verified fictional-to-real recipient configuration entered outside source control, Twilio credentials in Cloudflare secrets, a sending number, delivery webhook validation, and explicit ownership approval for exactly one harmless test.
+Before step 3, provision authenticated production access, the D1 database, verified fictional-to-real recipient configuration entered outside source control, SignalWire credentials in Cloudflare secrets, a sending number, authenticated delivery callback verification, and explicit ownership approval for exactly one harmless test.

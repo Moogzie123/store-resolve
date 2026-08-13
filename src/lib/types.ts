@@ -61,7 +61,7 @@ export interface Notification {
   channel: 'SMS' | 'IN_APP'
   message: string
   status: NotificationStatus
-  provider: 'MOCK' | 'TWILIO'
+  provider: 'MOCK' | 'TWILIO' | 'SIGNALWIRE'
   providerMessageId?: string
   createdAt: string
   sentAt?: string

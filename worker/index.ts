@@ -3,26 +3,27 @@ import { zValidator } from '@hono/zod-validator'
 import { z } from 'zod'
 import {
   actionSchema,
-  callbackSchema,
   complaintInputSchema,
   configSchema,
   contactSchema,
+  signalWireCallbackSchema,
   testNotificationSchema,
 } from '../src/lib/api-schema'
 import { createComplaint, processDeadlines, updateComplaint } from '../src/lib/workflow'
 import type { AppState, User } from '../src/lib/types'
 import { authenticate, canAdmin, canViewComplaint, maskEmail, maskPhone } from './auth'
 import { loadState, persistState, type D1Database } from './d1'
-import { TwilioSmsProvider, validateTwilioSignature } from './providers'
-import { applyTwilioCallback } from './callbacks'
+import { SignalWireSmsProvider } from './providers'
+import { applySignalWireCallback } from './callbacks'
 
 type Bindings = {
   DB: D1Database
   ASSETS?: { fetch(request: Request): Promise<Response> }
   DEV_AUTH_USER_ID?: string
-  TWILIO_ACCOUNT_SID?: string
-  TWILIO_AUTH_TOKEN?: string
-  TWILIO_PHONE_NUMBER?: string
+  SIGNALWIRE_PROJECT_ID?: string
+  SIGNALWIRE_API_TOKEN?: string
+  SIGNALWIRE_SPACE_URL?: string
+  SIGNALWIRE_PHONE_NUMBER?: string
   PUBLIC_BASE_URL?: string
 }
 type Variables = { user: User }
@@ -30,11 +31,12 @@ const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 const ownerIds = ['father', 'uncle', 'grandfather']
 const jsonError = (message: string) => ({ error: message })
 const provider = (env: Bindings) =>
-  new TwilioSmsProvider({
-    accountSid: env.TWILIO_ACCOUNT_SID,
-    authToken: env.TWILIO_AUTH_TOKEN,
-    from: env.TWILIO_PHONE_NUMBER,
-    statusCallbackUrl: env.PUBLIC_BASE_URL ? `${env.PUBLIC_BASE_URL}/api/twilio/status` : undefined,
+  new SignalWireSmsProvider({
+    projectId: env.SIGNALWIRE_PROJECT_ID,
+    apiToken: env.SIGNALWIRE_API_TOKEN,
+    spaceUrl: env.SIGNALWIRE_SPACE_URL,
+    from: env.SIGNALWIRE_PHONE_NUMBER,
+    publicBaseUrl: env.PUBLIC_BASE_URL,
   })
 const publicState = (state: AppState, user: User): AppState => ({
   ...state,
@@ -46,22 +48,21 @@ const publicState = (state: AppState, user: User): AppState => ({
 })
 
 app.get('/api/health', (c) => c.json({ ok: true, service: 'store-resolve' }))
-app.post('/api/twilio/status', async (c) => {
+app.post('/api/signalwire/status', async (c) => {
   const form = await c.req.parseBody()
-  const signature = c.req.header('X-Twilio-Signature') ?? ''
-  if (
-    !c.env.TWILIO_AUTH_TOKEN ||
-    !signature ||
-    !(await validateTwilioSignature(c.env.TWILIO_AUTH_TOKEN, signature, c.req.url, form))
-  )
-    return c.json(jsonError('Invalid Twilio signature'), 403)
-  const parsed = callbackSchema.safeParse(form)
+  const parsed = signalWireCallbackSchema.safeParse(form)
   if (!parsed.success) return c.json(jsonError('Invalid callback'), 400)
-  const result = await applyTwilioCallback(c.env.DB, {
-    messageSid: parsed.data.MessageSid,
-    messageStatus: parsed.data.MessageStatus,
-    errorCode: parsed.data.ErrorCode,
-  })
+  const signalWire = provider(c.env)
+  if (!signalWire.ready) return c.json(jsonError('Provider unavailable'), 503)
+  let message
+  try {
+    message = await signalWire.retrieveMessage(parsed.data.MessageSid)
+  } catch {
+    return c.json(jsonError('SignalWire verification failed'), 403)
+  }
+  const result = await applySignalWireCallback(c.env.DB, message, c.env.SIGNALWIRE_PHONE_NUMBER!)
+  if (result === 'AUTHENTICITY_FAILED')
+    return c.json(jsonError('SignalWire verification failed'), 403)
   if (result === 'NOT_FOUND') return c.json(jsonError('Notification not found'), 404)
   return c.json({ ok: true, result })
 })
@@ -171,7 +172,7 @@ app.post('/api/admin/test-notifications', zValidator('json', testNotificationSch
   const now = new Date().toISOString()
   const id = `test-${crypto.randomUUID()}`
   const message =
-    'STORERESOLVE TEST\n\nStoreResolve complaint alerts are connected to this phone.\n\nNo action is required.'
+    'STORERESOLVE TEST\nStoreResolve complaint alerts are connected to this phone.\nNo action is required.'
   let status = 'SUPPRESSED',
     reason: string | undefined,
     providerMessageId: string | undefined
@@ -179,7 +180,7 @@ app.post('/api/admin/test-notifications', zValidator('json', testNotificationSch
   else if (state.config.mode !== 'FAMILY_PILOT') reason = 'FAMILY_PILOT_REQUIRED'
   else if (!recipient.active || !recipient.smsEnabled || !recipient.phone)
     reason = 'RECIPIENT_NOT_READY'
-  else if (!provider(c.env).ready) reason = 'TWILIO_NOT_READY'
+  else if (!provider(c.env).ready) reason = 'SIGNALWIRE_NOT_READY'
   else {
     try {
       const result = await provider(c.env).send(
@@ -191,7 +192,7 @@ app.post('/api/admin/test-notifications', zValidator('json', testNotificationSch
           channel: 'SMS',
           message,
           status: 'PENDING',
-          provider: 'TWILIO',
+          provider: 'SIGNALWIRE',
           createdAt: now,
         },
         recipient.phone,
@@ -204,7 +205,7 @@ app.post('/api/admin/test-notifications', zValidator('json', testNotificationSch
     }
   }
   await c.env.DB.prepare(
-    `INSERT INTO notifications(id,complaint_id,event_type,recipient_user_id,channel,message,status,provider,provider_message_id,created_at,sent_at,failed_at,failure_reason) VALUES(?,NULL,'TEST',?,'SMS',?,?,'TWILIO',?,?,?, ?,?)`,
+    `INSERT INTO notifications(id,complaint_id,event_type,recipient_user_id,channel,message,status,provider,provider_message_id,created_at,sent_at,failed_at,failure_reason) VALUES(?,NULL,'TEST',?,'SMS',?,?,'SIGNALWIRE',?,?,?, ?,?)`,
   )
     .bind(
       id,
@@ -229,7 +230,7 @@ app.post('/api/admin/test-notifications', zValidator('json', testNotificationSch
 async function dispatchEligible(env: Bindings, state: AppState) {
   for (const complaint of state.complaints)
     for (const n of complaint.notifications) {
-      if (n.status !== 'SENT' || n.providerMessageId) continue
+      if (n.status !== 'PENDING' || n.providerMessageId) continue
       const recipient = state.users.find((u) => u.id === n.recipientUserId)
       if (!recipient) continue
       let reason: string | undefined
@@ -238,6 +239,7 @@ async function dispatchEligible(env: Bindings, state: AppState) {
         reason = 'FAMILY_PILOT'
       else if (!recipient.smsEnabled || !recipient.active || !recipient.phone)
         reason = 'RECIPIENT_NOT_READY'
+      else if (!provider(env).ready) reason = 'SIGNALWIRE_NOT_READY'
       if (reason) {
         n.status = 'SUPPRESSED'
         n.failureReason = reason
@@ -246,6 +248,7 @@ async function dispatchEligible(env: Bindings, state: AppState) {
       try {
         const result = await provider(env).send(n, recipient.phone)
         n.providerMessageId = result.providerMessageId
+        n.status = result.status
         n.sentAt = new Date().toISOString()
       } catch (error) {
         n.status = 'FAILED'

@@ -27,4 +27,6 @@ pnpm test:e2e
 
 The Playwright suite exercises the Worker+D1 path, refresh persistence, separate authenticated sessions, authorization, and the test-message confirmation guard. No live SMS is sent by tests. Default production state is `FAMILY_PILOT` with external notifications disabled.
 
+Production SMS uses the server-side SignalWire adapter. Provider acceptance is recorded as `SENT`; an authenticated provider lookup validates callbacks before final delivery status changes. See `docs/INTEGRATIONS.md` for the safe setup and one-recipient test runbook.
+
 No real customer information, phone numbers, email addresses, or credentials belong in this repository.

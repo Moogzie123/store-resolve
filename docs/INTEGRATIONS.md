@@ -1,31 +1,47 @@
 # Integrations
 
-## Twilio
+## SignalWire
 
-Set secrets only after the Worker exists:
+StoreResolve uses SignalWire's Compatibility API with HTTP Basic authentication. Enter every value interactively; never put production values in source, shell history, command arguments, or logs:
 
 ```bash
-npx wrangler secret put TWILIO_ACCOUNT_SID
-npx wrangler secret put TWILIO_AUTH_TOKEN
-npx wrangler secret put TWILIO_PHONE_NUMBER
+npx wrangler secret put SIGNALWIRE_PROJECT_ID
+npx wrangler secret put SIGNALWIRE_API_TOKEN
+npx wrangler secret put SIGNALWIRE_SPACE_URL
+npx wrangler secret put SIGNALWIRE_PHONE_NUMBER
 npx wrangler secret put PUBLIC_BASE_URL
 ```
 
-`PUBLIC_BASE_URL` is the deployed HTTPS origin without a trailing slash. The provider sends its status callback to `/api/twilio/status`. The endpoint validates `X-Twilio-Signature`, records callback identity, ignores duplicates, and maps `delivered`, `failed`, and `undelivered` independently. Full phone/email values remain in D1 and are masked in responses; they are never logged by StoreResolve.
+`SIGNALWIRE_SPACE_URL` is the assigned `*.signalwire.com` host, with or without `https://`. `SIGNALWIRE_PHONE_NUMBER` must be an E.164 sender owned by the project. `PUBLIC_BASE_URL` is the deployed HTTPS origin without a path or trailing slash. Readiness remains `NOT READY` unless all five values pass structural validation.
+
+The send request includes `StatusCallback=<PUBLIC_BASE_URL>/api/signalwire/status`. SignalWire's documented status callback has no documented request-signature scheme, so StoreResolve does not trust callback fields beyond the UUID message ID. Before D1 mutation, the Worker retrieves the authoritative message with its API credentials and compares project ID, message ID, sender, and the notification's stored recipient. The callback is idempotent and maps `queued`, `sending`, and `sent` to `SENT`; `delivered`, `failed`, and `undelivered` are terminal states.
+
+Cloudflare Access must bypass exactly `/api/signalwire/status`, and no broader `/api` route. Remove any legacy `/api/twilio/status` bypass only after the new callback works end-to-end.
 
 ## Controlled first SMS
 
-1. Deploy and verify `FAMILY_PILOT`.
-2. Leave external notifications disabled.
-3. In Pilot controls, configure one owner with E.164 phone, email, Active, and SMS enabled.
-4. Add all four Twilio/URL secrets and redeploy.
-5. Verify the page shows provider `READY` and the masked destination.
-6. Manually enable external notifications.
-7. Select exactly that one owner, check the explicit confirmation, and send once.
-8. Wait for the notification to move from `SENT` to `DELIVERED`, `FAILED`, or `UNDELIVERED` through the callback.
-9. Turn the kill switch off again while reviewing results.
+1. Deploy and verify `FAMILY_PILOT` while external notifications remain disabled.
+2. Configure exactly one of Father, Uncle, or Grandfather through the secured admin page with an E.164 phone, Active, and SMS enabled.
+3. Add the five SignalWire secrets interactively and verify the page shows SignalWire `READY` and only a masked destination.
+4. Confirm manager external notifications remain suppressed and no send-to-all target exists.
+5. Obtain explicit approval for exactly one recipient and one harmless test.
+6. Temporarily enable external notifications, select that recipient, check the explicit confirmation, and send once.
+7. Record the provider message ID and initial `SENT` state, then wait for `DELIVERED`, `FAILED`, or `UNDELIVERED` through the authenticated callback.
+8. Turn external notifications off immediately and verify no manager notification was sent.
 
-The page has no manager or send-to-all target and rate-limits each recipient to one test per five minutes.
+The exact test body is:
+
+```text
+STORERESOLVE TEST
+StoreResolve complaint alerts are connected to this phone.
+No action is required.
+```
+
+The UI rate-limits each recipient to one test per five minutes. It has no manager or send-to-all target.
+
+## Rotation and emergency shutdown
+
+Rotate an API token in SignalWire, then replace only `SIGNALWIRE_API_TOKEN` with `wrangler secret put` and verify readiness before revoking the old token. If delivery behavior is unexpected, turn external notifications off in Pilot controls first; that D1 kill switch prevents all provider calls regardless of severity. Provider errors are redacted and phone/email values remain masked in client responses.
 
 ## Gmail
 

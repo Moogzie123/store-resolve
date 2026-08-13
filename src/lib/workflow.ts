@@ -58,7 +58,7 @@ function eligibility(
       reason: 'Store is outside the single-store pilot',
       provider: 'MOCK',
     }
-  return { status: 'SENT', provider: 'TWILIO' }
+  return { status: 'PENDING', provider: 'SIGNALWIRE' }
 }
 function notification(
   state: AppState,
@@ -80,7 +80,7 @@ function notification(
     status: eligible.status,
     provider: eligible.provider,
     createdAt: now,
-    sentAt: eligible.status === 'SENT' ? now : undefined,
+    sentAt: undefined,
     failureReason: eligible.reason,
   }
 }

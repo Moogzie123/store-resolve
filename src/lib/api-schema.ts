@@ -36,8 +36,6 @@ export const testNotificationSchema = z.object({
   recipientUserId: z.enum(['father', 'uncle', 'grandfather']),
   confirmed: z.literal(true),
 })
-export const callbackSchema = z.object({
-  MessageSid: z.string().min(1),
-  MessageStatus: z.string().min(1),
-  ErrorCode: z.string().optional(),
+export const signalWireCallbackSchema = z.object({
+  MessageSid: z.string().uuid(),
 })

@@ -1107,7 +1107,7 @@ function PilotControls({
               <strong>{state.config.externalNotificationsEnabled ? 'ENABLED' : 'DISABLED'}</strong>
             </span>
             <span>
-              Twilio provider <strong>{providerReady ? 'READY' : 'NOT READY'}</strong>
+              SignalWire provider <strong>{providerReady ? 'READY' : 'NOT READY'}</strong>
             </span>
             <span>
               Destination <strong>{chosen.phone}</strong>

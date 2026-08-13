@@ -34,8 +34,9 @@ Local D1 data lives under ignored `.wrangler/` state and survives Worker restart
 3. In D1, replace each placeholder ownership email with the exact verified Access email through the secured admin page.
 4. Do not configure `DEV_AUTH_USER_ID` in production.
 5. Verify unauthenticated `/api/bootstrap` access is blocked by Access and by the Worker.
-6. Add a narrow Access bypass policy only for `/api/twilio/status`; that route independently requires a valid Twilio signature. Do not bypass Access for any other `/api` path.
+6. Add a narrow Access bypass policy only for `/api/signalwire/status`; that route independently verifies each message through SignalWire's authenticated API before updating D1. Do not bypass Access for any other `/api` path.
+7. After the SignalWire callback is verified end-to-end, remove the legacy `/api/twilio/status` Access bypass if it exists.
 
 ## Safe deployment state
 
-Migration `0002_persistence_and_auth.sql` sets `notification_mode=FAMILY_PILOT` and `external_notifications_enabled=false`. Deploying never sends a message. Gmail and Google Pub/Sub remain unconfigured.
+Migration `0002_persistence_and_auth.sql` sets `notification_mode=FAMILY_PILOT` and `external_notifications_enabled=false`. Deploying and setting provider secrets never sends a message. Gmail and Google Pub/Sub remain unconfigured.
