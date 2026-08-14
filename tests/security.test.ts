@@ -318,6 +318,49 @@ describe('SignalWire boundary', () => {
     )
   })
 
+  it('falls back to the authenticated native log for an existing Relay message', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response('<html>not addressable through Compatibility Retrieve</html>', {
+          status: 200,
+          headers: { 'content-type': 'text/html' },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: messageSid,
+            project_id: projectId,
+            status: 'delivered',
+            from: sender,
+            to: recipient,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+      )
+    vi.stubGlobal('fetch', fetch)
+    await expect(
+      new SignalWireSmsProvider(config).retrieveMessage(messageSid),
+    ).resolves.toMatchObject({
+      sid: messageSid,
+      accountSid: projectId,
+      status: 'delivered',
+      from: sender,
+      to: recipient,
+    })
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      `https://example.signalwire.com/api/messaging/logs/${messageSid}`,
+      expect.objectContaining({
+        headers: {
+          accept: 'application/json',
+          authorization: expect.stringMatching(/^Basic /),
+        },
+      }),
+    )
+  })
+
   it('diagnoses authenticated provider access without creating a message', async () => {
     const fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ messages: [] }), {

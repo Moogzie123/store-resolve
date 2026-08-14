@@ -20,6 +20,8 @@ Bootstrap performs a read-only authenticated Compatibility API message-list quer
 
 The owner-only reconciliation endpoint is available solely to recover a missed webhook for an existing `PILOT_ADMIN` notification. It refuses to run unless `FAMILY_PILOT` is active and external notifications are disabled, retrieves the authoritative provider message, verifies project/from/to identity, and updates only a terminal notification state. It does not create a `notification_callbacks` row because no webhook was received.
 
+Compatibility Retrieve is attempted first. For a legacy message created by SignalWire's native Relay API, which may not be addressable through Compatibility Retrieve, StoreResolve falls back to the authenticated native message-log record. Both paths return the same normalized identity and are subject to the same project, sender, and stored-recipient checks before any mutation.
+
 Cloudflare Access must bypass exactly `/api/signalwire/status`, and no broader `/api` route. Remove any legacy `/api/twilio/status` bypass only after the new callback works end-to-end.
 
 ## Controlled first SMS

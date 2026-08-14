@@ -201,24 +201,48 @@ export class SignalWireSmsProvider implements NotificationProvider {
     if (!this.ready || !this.compatibilityApiBase || !this.authorization || !projectId)
       throw new Error('SignalWire is not configured')
     if (!uuid.test(messageSid)) throw new Error('Invalid SignalWire message identifier')
-    const response = await fetch(
+    const compatibilityResponse = await fetch(
       `${this.compatibilityApiBase}/Messages/${encodeURIComponent(messageSid)}.json`,
       { headers: { accept: 'application/json', authorization: this.authorization } },
     )
-    const body = await this.responseBody(response)
-    const message = messageFrom(body)
-    if (!response.ok || !message)
+    let compatibilityBody: Record<string, unknown> = {}
+    try {
+      compatibilityBody = await this.responseBody(compatibilityResponse)
+    } catch {
+      // A legacy Relay message can produce a non-JSON compatibility response.
+      // The authenticated native log fallback below remains authoritative.
+    }
+    const compatibilityMessage = messageFrom(compatibilityBody)
+    if (
+      compatibilityResponse.ok &&
+      compatibilityMessage?.sid === messageSid &&
+      compatibilityMessage.accountSid === projectId
+    )
+      return compatibilityMessage
+
+    // Native Relay messages are authoritative in SignalWire's native log but
+    // are not always addressable through Compatibility Retrieve.
+    const origin = signalWireOrigin(this.config.spaceUrl)
+    const nativeResponse = await fetch(
+      `${origin}/api/messaging/logs/${encodeURIComponent(messageSid)}`,
+      { headers: { accept: 'application/json', authorization: this.authorization } },
+    )
+    const nativeBody = await this.responseBody(nativeResponse)
+    const nativeMessage = messageFrom(nativeBody)
+    if (!nativeResponse.ok || !nativeMessage)
       throw new Error(
         safeDiagnostic(
-          body.message ??
-            body.error_message ??
-            `SignalWire verification failed (${response.status})`,
+          nativeBody.message ??
+            nativeBody.error_message ??
+            compatibilityBody.message ??
+            compatibilityBody.error_message ??
+            `SignalWire verification failed (${nativeResponse.status})`,
           [this.config.projectId, this.config.apiToken],
         ),
       )
-    if (message.sid !== messageSid || message.accountSid !== this.config.projectId)
+    if (nativeMessage.sid !== messageSid || nativeMessage.accountSid !== projectId)
       throw new Error('SignalWire returned an unexpected message identity')
-    return message
+    return nativeMessage
   }
 
   async verifyConnection(): Promise<void> {
