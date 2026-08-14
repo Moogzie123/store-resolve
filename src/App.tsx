@@ -274,6 +274,17 @@ export default function App() {
                   })
                   .catch((error: Error) => show(error.message))
               }
+              onReconcile={async (providerMessageId) => {
+                try {
+                  const result = await api.reconcileSignalWire(providerMessageId)
+                  const refreshed = await api.bootstrap()
+                  setState(refreshed.state)
+                  setProviderReady(refreshed.providerReady)
+                  show(`Provider reconciliation ${result.result.toLowerCase()}`)
+                } catch (error) {
+                  show((error as Error).message)
+                }
+              }}
             />
           )}
         </div>
@@ -987,6 +998,7 @@ function PilotControls({
   providerReady,
   onSaveConfig,
   onSendTest,
+  onReconcile,
 }: {
   state: AppState
   setState: (s: AppState) => void
@@ -994,6 +1006,7 @@ function PilotControls({
   providerReady: boolean
   onSaveConfig: (config: AppState['config']) => void
   onSendTest: (id: 'father' | 'uncle' | 'grandfather' | 'pilot-admin') => void
+  onReconcile: (providerMessageId: string) => void
 }) {
   const owners = state.users.filter((u) => ['father', 'uncle', 'grandfather'].includes(u.id))
   const pilotAdmin = state.users.find((u) => u.recipientKind === 'PILOT_ADMIN')
@@ -1185,6 +1198,18 @@ function PilotControls({
                   >
                     {notification.status}
                   </Badge>
+                  {recipient === 'pilot-admin' &&
+                    notification.provider === 'SIGNALWIRE' &&
+                    notification.providerMessageId &&
+                    state.config.mode === 'FAMILY_PILOT' &&
+                    !state.config.externalNotificationsEnabled && (
+                      <button
+                        className="secondary"
+                        onClick={() => onReconcile(notification.providerMessageId!)}
+                      >
+                        Reconcile provider state
+                      </button>
+                    )}
                 </div>
               ))}
             </div>

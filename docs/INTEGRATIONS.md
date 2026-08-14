@@ -14,9 +14,11 @@ npx wrangler secret put PUBLIC_BASE_URL
 
 `SIGNALWIRE_SPACE_URL` is the assigned `*.signalwire.com` host, with or without `https://`. `SIGNALWIRE_PHONE_NUMBER` must be an E.164 sender owned by the project. `PUBLIC_BASE_URL` is the deployed HTTPS origin without a path or trailing slash. Readiness remains `NOT READY` unless all five values pass structural validation.
 
-The send request uses SignalWire's JSON Messaging API and includes `status_callback_url=<PUBLIC_BASE_URL>/api/signalwire/status`. StoreResolve does not trust callback delivery state directly. Before D1 mutation, the Worker retrieves the authoritative message log with its API credentials and compares project ID, message ID, sender, and the notification's stored recipient. The callback is idempotent and maps `queued`, `sending`, and `sent` to `SENT`; `delivered`, `failed`, and `undelivered` are terminal states.
+The send request uses SignalWire's Compatibility REST API Create Message endpoint with an `application/x-www-form-urlencoded` body containing `To`, `From`, `Body`, and `StatusCallback=<PUBLIC_BASE_URL>/api/signalwire/status`. The provider never submits `status_callback_url`. StoreResolve does not trust callback delivery state directly. Before D1 mutation, the Worker retrieves the authoritative Compatibility API Message with its API credentials and compares project ID, message ID, sender, and the notification's stored recipient. The callback is idempotent and maps `queued`, `sending`, and `sent` to `SENT`; `delivered`, `failed`, and `undelivered` are terminal states.
 
-Bootstrap performs a read-only authenticated message-log query. Provider readiness therefore verifies credentials, Messaging scope, JSON response shape, and API reachability without creating a message.
+Bootstrap performs a read-only authenticated Compatibility API message-list query. Provider readiness therefore verifies credentials, Messaging scope, JSON response shape, and API reachability without creating a message.
+
+The owner-only reconciliation endpoint is available solely to recover a missed webhook for an existing `PILOT_ADMIN` notification. It refuses to run unless `FAMILY_PILOT` is active and external notifications are disabled, retrieves the authoritative provider message, verifies project/from/to identity, and updates only a terminal notification state. It does not create a `notification_callbacks` row because no webhook was received.
 
 Cloudflare Access must bypass exactly `/api/signalwire/status`, and no broader `/api` route. Remove any legacy `/api/twilio/status` bypass only after the new callback works end-to-end.
 

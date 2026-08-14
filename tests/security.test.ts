@@ -3,7 +3,7 @@ import { authenticate, canAdmin, canViewComplaint, maskEmail, maskPhone } from '
 import { SignalWireSmsProvider, type SignalWireMessage } from '../worker/providers'
 import type { D1Database, D1PreparedStatement } from '../worker/d1'
 import type { Notification, User } from '../src/lib/types'
-import { applySignalWireCallback } from '../worker/callbacks'
+import { applySignalWireCallback, reconcileSignalWireMessage } from '../worker/callbacks'
 
 const projectId = '11111111-2222-4333-8444-555555555555'
 const messageSid = 'b155a7c4-17d9-4ba0-a51a-d2d7d36652df'
@@ -43,6 +43,8 @@ function callbackDb(
     phone?: string
     duplicate?: boolean
     missing?: boolean
+    recipientUserId?: string
+    recipientKind?: string
   } = {},
 ) {
   let updates = 0
@@ -63,8 +65,9 @@ function callbackDb(
             : {
                 id: 'n-1',
                 status: options.currentStatus ?? 'SENT',
-                recipient_user_id: 'father',
+                recipient_user_id: options.recipientUserId ?? 'pilot-admin',
                 recipient_phone: options.phone ?? recipient,
+                recipient_kind: options.recipientKind ?? 'PILOT_ADMIN',
               },
         ),
         run: vi.fn(async () => {
@@ -121,16 +124,16 @@ describe('SignalWire callback persistence', () => {
     ['undelivered', 'UNDELIVERED'],
   ])('maps authenticated provider status %s to %s', async (providerStatus, storedStatus) => {
     const { db, prepared, updates } = callbackDb()
-    expect(await applySignalWireCallback(db, providerMessage(providerStatus), sender)).toBe(
-      'UPDATED',
-    )
+    expect(
+      await applySignalWireCallback(db, providerMessage(providerStatus), projectId, sender),
+    ).toBe('UPDATED')
     expect(updates()).toBe(1)
     const update = prepared.find((entry) => entry.sql.startsWith('UPDATE'))
     expect(update?.values[0]).toBe(storedStatus)
   })
   it('treats a repeated callback as a duplicate', async () => {
     const { db, updates } = callbackDb({ duplicate: true })
-    expect(await applySignalWireCallback(db, providerMessage('delivered'), sender)).toBe(
+    expect(await applySignalWireCallback(db, providerMessage('delivered'), projectId, sender)).toBe(
       'DUPLICATE',
     )
     expect(updates()).toBe(0)
@@ -140,6 +143,7 @@ describe('SignalWire callback persistence', () => {
       await applySignalWireCallback(
         callbackDb({ missing: true }).db,
         providerMessage('sent'),
+        projectId,
         sender,
       ),
     ).toBe('NOT_FOUND')
@@ -147,6 +151,7 @@ describe('SignalWire callback persistence', () => {
       await applySignalWireCallback(
         callbackDb().db,
         { ...providerMessage('sent'), from: '+15559999999' },
+        projectId,
         sender,
       ),
     ).toBe('AUTHENTICITY_FAILED')
@@ -154,14 +159,68 @@ describe('SignalWire callback persistence', () => {
       await applySignalWireCallback(
         callbackDb({ phone: '+15558888888' }).db,
         providerMessage('sent'),
+        projectId,
         sender,
       ),
     ).toBe('AUTHENTICITY_FAILED')
   })
   it('does not regress a terminal state', async () => {
     const { db, updates } = callbackDb({ currentStatus: 'DELIVERED' })
-    expect(await applySignalWireCallback(db, providerMessage('sent'), sender)).toBe('IGNORED')
+    expect(await applySignalWireCallback(db, providerMessage('sent'), projectId, sender)).toBe(
+      'IGNORED',
+    )
     expect(updates()).toBe(0)
+  })
+
+  it('rejects a callback whose authoritative project identity does not match', async () => {
+    const { db, updates } = callbackDb()
+    expect(
+      await applySignalWireCallback(
+        db,
+        { ...providerMessage('delivered'), accountSid: crypto.randomUUID() },
+        projectId,
+        sender,
+      ),
+    ).toBe('AUTHENTICITY_FAILED')
+    expect(updates()).toBe(0)
+  })
+})
+
+describe('SignalWire provider reconciliation', () => {
+  it('reconciles an authenticated Pilot Admin delivery without fabricating a callback row', async () => {
+    const { db, prepared, updates } = callbackDb()
+    expect(
+      await reconcileSignalWireMessage(
+        db,
+        providerMessage('delivered'),
+        projectId,
+        sender,
+        'pilot-admin',
+      ),
+    ).toBe('UPDATED')
+    expect(updates()).toBe(1)
+    expect(prepared.some((entry) => entry.sql.includes('notification_callbacks'))).toBe(false)
+    expect(prepared.find((entry) => entry.sql.startsWith('UPDATE'))?.values[0]).toBe('DELIVERED')
+  })
+
+  it('rejects a reconciliation for any non-Pilot recipient or identity mismatch', async () => {
+    for (const options of [
+      { recipientUserId: 'father' },
+      { recipientKind: 'STANDARD' },
+      { phone: '+15558888888' },
+    ]) {
+      const { db, updates } = callbackDb(options)
+      expect(
+        await reconcileSignalWireMessage(
+          db,
+          providerMessage('delivered'),
+          projectId,
+          sender,
+          'pilot-admin',
+        ),
+      ).toBe('AUTHENTICITY_FAILED')
+      expect(updates()).toBe(0)
+    }
   })
 })
 
@@ -190,8 +249,8 @@ describe('SignalWire boundary', () => {
     const fetch = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
-          id: messageSid,
-          project_id: projectId,
+          sid: messageSid,
+          account_sid: projectId,
           status: 'queued',
           from: sender,
           to: recipient,
@@ -207,20 +266,32 @@ describe('SignalWire boundary', () => {
       status: 'SENT',
     })
     const [url, request] = fetch.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('https://example.signalwire.com/api/messaging/messages')
-    expect(JSON.parse(request.body as string)).toEqual({
-      to: recipient,
-      from: sender,
-      body: 'test',
-      status_callback_url: 'https://store-resolve.example.com/api/signalwire/status',
+    expect(url).toBe(
+      `https://example.signalwire.com/api/laml/2010-04-01/Accounts/${projectId}/Messages`,
+    )
+    expect(request.headers).toMatchObject({
+      authorization: expect.stringMatching(/^Basic /),
+      'content-type': 'application/x-www-form-urlencoded;charset=UTF-8',
     })
+    const form = new URLSearchParams(request.body as string)
+    expect(Object.fromEntries(form)).toEqual({
+      To: recipient,
+      From: sender,
+      Body: 'test',
+      StatusCallback: 'https://store-resolve.example.com/api/signalwire/status',
+    })
+    expect(form.has('status_callback_url')).toBe(false)
+    expect(provider.statusCallbackUrl).toBe(
+      'https://store-resolve.example.com/api/signalwire/status',
+    )
   })
 
   it('retrieves the authoritative provider record before callback mutation', async () => {
     const fetch = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
-          id: messageSid,
+          sid: messageSid,
+          account_sid: projectId,
           status: 'delivered',
           from: sender,
           to: recipient,
@@ -237,7 +308,7 @@ describe('SignalWire boundary', () => {
       to: recipient,
     })
     expect(fetch).toHaveBeenCalledWith(
-      `https://example.signalwire.com/api/messaging/logs/${messageSid}`,
+      `https://example.signalwire.com/api/laml/2010-04-01/Accounts/${projectId}/Messages/${messageSid}.json`,
       expect.objectContaining({
         headers: {
           accept: 'application/json',
@@ -249,7 +320,7 @@ describe('SignalWire boundary', () => {
 
   it('diagnoses authenticated provider access without creating a message', async () => {
     const fetch = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ data: [] }), {
+      new Response(JSON.stringify({ messages: [] }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       }),
@@ -258,7 +329,7 @@ describe('SignalWire boundary', () => {
     await expect(new SignalWireSmsProvider(config).verifyConnection()).resolves.toBeUndefined()
     expect(fetch).toHaveBeenCalledTimes(1)
     expect(fetch).toHaveBeenCalledWith(
-      'https://example.signalwire.com/api/messaging/logs?page_size=1',
+      `https://example.signalwire.com/api/laml/2010-04-01/Accounts/${projectId}/Messages.json?PageSize=1`,
       expect.objectContaining({ headers: expect.objectContaining({ accept: 'application/json' }) }),
     )
   })

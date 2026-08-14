@@ -15,6 +15,11 @@ async function request<T>(path: string, schema: z.ZodType<T>, init?: RequestInit
 }
 const bootstrapSchema = z.custom<BootstrapResponse>()
 const stateSchema = z.custom<AppState>()
+const reconciliationSchema = z.object({
+  ok: z.literal(true),
+  result: z.enum(['UPDATED', 'UNCHANGED']),
+  providerStatus: z.enum(['DELIVERED', 'FAILED', 'UNDELIVERED']),
+})
 export const api = {
   bootstrap: () => request('/bootstrap', bootstrapSchema),
   createComplaint: (input: NewComplaint) =>
@@ -53,5 +58,10 @@ export const api = {
     request('/admin/test-notifications', stateSchema, {
       method: 'POST',
       body: JSON.stringify({ recipientUserId, confirmed: true }),
+    }),
+  reconcileSignalWire: (providerMessageId: string) =>
+    request('/admin/signalwire/reconcile', reconciliationSchema, {
+      method: 'POST',
+      body: JSON.stringify({ providerMessageId }),
     }),
 }

@@ -7,6 +7,7 @@ import {
   configSchema,
   contactSchema,
   signalWireCallbackSchema,
+  signalWireReconcileSchema,
   testNotificationSchema,
 } from '../src/lib/api-schema'
 import { createComplaint, processDeadlines, updateComplaint } from '../src/lib/workflow'
@@ -14,7 +15,7 @@ import type { AppState, User } from '../src/lib/types'
 import { authenticate, canAdmin, canViewComplaint, maskEmail, maskPhone } from './auth'
 import { loadState, persistState, type D1Database } from './d1'
 import { SignalWireSmsProvider } from './providers'
-import { applySignalWireCallback } from './callbacks'
+import { applySignalWireCallback, reconcileSignalWireMessage } from './callbacks'
 
 type Bindings = {
   DB: D1Database
@@ -73,7 +74,12 @@ app.post('/api/signalwire/status', async (c) => {
   } catch {
     return c.json(jsonError('SignalWire verification failed'), 403)
   }
-  const result = await applySignalWireCallback(c.env.DB, message, c.env.SIGNALWIRE_PHONE_NUMBER!)
+  const result = await applySignalWireCallback(
+    c.env.DB,
+    message,
+    c.env.SIGNALWIRE_PROJECT_ID!,
+    c.env.SIGNALWIRE_PHONE_NUMBER!,
+  )
   if (result === 'AUTHENTICITY_FAILED')
     return c.json(jsonError('SignalWire verification failed'), 403)
   if (result === 'NOT_FOUND') return c.json(jsonError('Notification not found'), 404)
@@ -110,6 +116,39 @@ app.get('/api/bootstrap', async (c) => {
     providerReady,
   })
 })
+app.post(
+  '/api/admin/signalwire/reconcile',
+  zValidator('json', signalWireReconcileSchema),
+  async (c) => {
+    const user = c.get('user')
+    if (!canAdmin(user)) return c.json(jsonError('Owner access required'), 403)
+    const state = await loadState(c.env.DB)
+    if (state.config.externalNotificationsEnabled)
+      return c.json(jsonError('External notifications must be disabled'), 409)
+    if (state.config.mode !== 'FAMILY_PILOT')
+      return c.json(jsonError('FAMILY_PILOT mode required'), 409)
+    const signalWire = provider(c.env)
+    if (!signalWire.ready) return c.json(jsonError('Provider unavailable'), 503)
+    let message
+    try {
+      message = await signalWire.retrieveMessage(c.req.valid('json').providerMessageId)
+    } catch {
+      return c.json(jsonError('SignalWire verification failed'), 403)
+    }
+    const result = await reconcileSignalWireMessage(
+      c.env.DB,
+      message,
+      c.env.SIGNALWIRE_PROJECT_ID!,
+      c.env.SIGNALWIRE_PHONE_NUMBER!,
+      pilotAdminId,
+    )
+    if (result === 'AUTHENTICITY_FAILED')
+      return c.json(jsonError('SignalWire verification failed'), 403)
+    if (result === 'NOT_FOUND') return c.json(jsonError('Notification not found'), 404)
+    if (result === 'NON_TERMINAL') return c.json(jsonError('Provider state is not terminal'), 409)
+    return c.json({ ok: true, result, providerStatus: message.status.toUpperCase() })
+  },
+)
 app.post('/api/complaints', zValidator('json', complaintInputSchema), async (c) => {
   const user = c.get('user')
   if (!canAdmin(user)) return c.json(jsonError('Owner access required'), 403)

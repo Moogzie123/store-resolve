@@ -3,6 +3,8 @@ import type { D1Database } from './d1'
 
 export type CallbackResult =
   'UPDATED' | 'DUPLICATE' | 'IGNORED' | 'NOT_FOUND' | 'AUTHENTICITY_FAILED'
+export type ReconciliationResult =
+  'UPDATED' | 'UNCHANGED' | 'NON_TERMINAL' | 'NOT_FOUND' | 'AUTHENTICITY_FAILED'
 
 const terminal = new Set(['DELIVERED', 'FAILED', 'UNDELIVERED'])
 const map: Record<string, string> = {
@@ -17,6 +19,7 @@ const map: Record<string, string> = {
 export async function applySignalWireCallback(
   db: D1Database,
   message: SignalWireMessage,
+  expectedProjectId: string,
   expectedFrom: string,
   now = new Date().toISOString(),
 ): Promise<CallbackResult> {
@@ -27,7 +30,11 @@ export async function applySignalWireCallback(
     .bind(message.sid)
     .first<{ id: string; status: string; recipient_user_id: string; recipient_phone: string }>()
   if (!notification) return 'NOT_FOUND'
-  if (message.from !== expectedFrom || message.to !== notification.recipient_phone)
+  if (
+    message.accountSid !== expectedProjectId ||
+    message.from !== expectedFrom ||
+    message.to !== notification.recipient_phone
+  )
     return 'AUTHENTICITY_FAILED'
   const status = map[message.status.toLowerCase()]
   if (!status) return 'IGNORED'
@@ -54,6 +61,52 @@ export async function applySignalWireCallback(
       `UPDATE notifications SET status=?,sent_at=CASE WHEN ?='SENT' THEN COALESCE(sent_at,?) ELSE sent_at END,delivered_at=CASE WHEN ?='DELIVERED' THEN ? ELSE delivered_at END,failed_at=CASE WHEN ? IN ('FAILED','UNDELIVERED') THEN ? ELSE failed_at END,failure_reason=CASE WHEN ? IN ('FAILED','UNDELIVERED') THEN ? ELSE failure_reason END WHERE id=?`,
     )
     .bind(status, status, now, status, now, status, now, status, failureReason, notification.id)
+    .run()
+  return 'UPDATED'
+}
+
+export async function reconcileSignalWireMessage(
+  db: D1Database,
+  message: SignalWireMessage,
+  expectedProjectId: string,
+  expectedFrom: string,
+  expectedRecipientUserId: string,
+  now = new Date().toISOString(),
+): Promise<ReconciliationResult> {
+  const notification = await db
+    .prepare(
+      `SELECT n.id,n.status,n.recipient_user_id,u.phone AS recipient_phone,u.recipient_kind FROM notifications n JOIN users u ON u.id=n.recipient_user_id WHERE n.provider_message_id=? AND n.provider='SIGNALWIRE'`,
+    )
+    .bind(message.sid)
+    .first<{
+      id: string
+      status: string
+      recipient_user_id: string
+      recipient_phone: string
+      recipient_kind: string
+    }>()
+  if (!notification) return 'NOT_FOUND'
+  if (
+    message.accountSid !== expectedProjectId ||
+    message.from !== expectedFrom ||
+    message.to !== notification.recipient_phone ||
+    notification.recipient_user_id !== expectedRecipientUserId ||
+    notification.recipient_kind !== 'PILOT_ADMIN'
+  )
+    return 'AUTHENTICITY_FAILED'
+  const status = map[message.status.toLowerCase()]
+  if (!status || !terminal.has(status)) return 'NON_TERMINAL'
+  if (notification.status === status) return 'UNCHANGED'
+  if (terminal.has(notification.status)) return 'AUTHENTICITY_FAILED'
+  const failureReason =
+    status === 'FAILED' || status === 'UNDELIVERED'
+      ? (message.errorMessage ?? message.errorCode ?? null)
+      : null
+  await db
+    .prepare(
+      `UPDATE notifications SET status=?,delivered_at=CASE WHEN ?='DELIVERED' THEN ? ELSE delivered_at END,failed_at=CASE WHEN ? IN ('FAILED','UNDELIVERED') THEN ? ELSE failed_at END,failure_reason=CASE WHEN ? IN ('FAILED','UNDELIVERED') THEN ? ELSE failure_reason END WHERE id=?`,
+    )
+    .bind(status, status, now, status, now, status, failureReason, notification.id)
     .run()
   return 'UPDATED'
 }

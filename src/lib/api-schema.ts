@@ -40,3 +40,6 @@ export const signalWireCallbackSchema = z.union([
   z.object({ id: z.string().uuid(), project_id: z.string().uuid() }),
   z.object({ MessageSid: z.string().uuid() }),
 ])
+export const signalWireReconcileSchema = z.object({
+  providerMessageId: z.string().uuid(),
+})

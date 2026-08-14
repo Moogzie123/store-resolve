@@ -78,7 +78,12 @@ describe('independent notification safety', () => {
   it('global switch suppresses every external call regardless of mode', () => {
     state.config = { mode: 'FULL', externalNotificationsEnabled: false }
     state.users = state.users.map((u) => ({ ...u, smsEnabled: true }))
-    expect(create().complaint.notifications.every((n) => n.status === 'SUPPRESSED')).toBe(true)
+    const notifications = create().complaint.notifications
+    expect(notifications.every((n) => n.status === 'SUPPRESSED')).toBe(true)
+    expect(notifications.every((n) => n.failureReason === 'EXTERNAL_NOTIFICATIONS_DISABLED')).toBe(
+      true,
+    )
+    expect(notifications.some((n) => n.status === 'PENDING' || n.status === 'SENT')).toBe(false)
   })
   it('never permits PILOT_ADMIN in complaint delivery, even in FULL mode', () => {
     const pilotAdmin = state.users.find((u) => u.recipientKind === 'PILOT_ADMIN')!
