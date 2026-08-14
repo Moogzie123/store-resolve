@@ -38,6 +38,7 @@ export async function loadState(db: D1Database): Promise<AppState> {
     email: String(r.email ?? ''),
     phone: String(r.phone ?? ''),
     role: r.role as User['role'],
+    recipientKind: (r.recipient_kind ?? 'STANDARD') as User['recipientKind'],
     active: bool(r.active),
     smsEnabled: bool(r.sms_enabled),
     timezone: String(r.timezone),

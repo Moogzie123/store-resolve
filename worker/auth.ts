@@ -29,6 +29,7 @@ export async function authenticate(
     email: String(row.email),
     phone: String(row.phone),
     role: row.role as User['role'],
+    recipientKind: (row.recipient_kind ?? 'STANDARD') as User['recipientKind'],
     active: Boolean(row.active),
     smsEnabled: Boolean(row.sms_enabled),
     timezone: String(row.timezone),

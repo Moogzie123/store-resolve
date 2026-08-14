@@ -15,6 +15,7 @@ export const users = sqliteTable('users', {
   email: text('email').notNull(),
   phone: text('phone').notNull(),
   role: text('role').notNull(),
+  recipientKind: text('recipient_kind').notNull().default('STANDARD'),
   active: integer('active', { mode: 'boolean' }).notNull().default(true),
   smsEnabled: integer('sms_enabled', { mode: 'boolean' }).notNull().default(false),
   timezone: text('timezone').notNull(),

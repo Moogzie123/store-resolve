@@ -1,4 +1,5 @@
 export type Role = 'OWNER' | 'VIEW_ONLY' | 'STORE_MANAGER' | 'ADMIN'
+export type RecipientKind = 'STANDARD' | 'PILOT_ADMIN'
 export type Severity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
 export type Status =
   'NEW' | 'MANAGER_NOTIFIED' | 'ACKNOWLEDGED' | 'INVESTIGATING' | 'RESOLUTION_SUBMITTED' | 'CLOSED'
@@ -29,6 +30,7 @@ export interface User {
   email: string
   phone: string
   role: Role
+  recipientKind: RecipientKind
   active: boolean
   smsEnabled: boolean
   timezone: string

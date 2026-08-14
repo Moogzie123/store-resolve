@@ -31,6 +31,7 @@ const owner: User = {
   email: 'father@example.invalid',
   phone: '',
   role: 'OWNER',
+  recipientKind: 'STANDARD',
   active: true,
   smsEnabled: false,
   timezone: 'America/New_York',
@@ -189,8 +190,8 @@ describe('SignalWire boundary', () => {
     const fetch = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
-          sid: messageSid,
-          account_sid: projectId,
+          id: messageSid,
+          project_id: projectId,
           status: 'queued',
           from: sender,
           to: recipient,
@@ -206,15 +207,12 @@ describe('SignalWire boundary', () => {
       status: 'SENT',
     })
     const [url, request] = fetch.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe(
-      `https://example.signalwire.com/api/laml/2010-04-01/Accounts/${projectId}/Messages`,
-    )
-    const form = request.body as URLSearchParams
-    expect(Object.fromEntries(form)).toEqual({
-      To: recipient,
-      From: sender,
-      Body: 'test',
-      StatusCallback: 'https://store-resolve.example.com/api/signalwire/status',
+    expect(url).toBe('https://example.signalwire.com/api/messaging/messages')
+    expect(JSON.parse(request.body as string)).toEqual({
+      to: recipient,
+      from: sender,
+      body: 'test',
+      status_callback_url: 'https://store-resolve.example.com/api/signalwire/status',
     })
   })
 
@@ -222,8 +220,7 @@ describe('SignalWire boundary', () => {
     const fetch = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
-          sid: messageSid,
-          account_sid: projectId,
+          id: messageSid,
           status: 'delivered',
           from: sender,
           to: recipient,
@@ -240,8 +237,44 @@ describe('SignalWire boundary', () => {
       to: recipient,
     })
     expect(fetch).toHaveBeenCalledWith(
-      `https://example.signalwire.com/api/laml/2010-04-01/Accounts/${projectId}/Messages/${messageSid}.json`,
-      expect.objectContaining({ headers: { authorization: expect.stringMatching(/^Basic /) } }),
+      `https://example.signalwire.com/api/messaging/logs/${messageSid}`,
+      expect.objectContaining({
+        headers: {
+          accept: 'application/json',
+          authorization: expect.stringMatching(/^Basic /),
+        },
+      }),
+    )
+  })
+
+  it('diagnoses authenticated provider access without creating a message', async () => {
+    const fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetch)
+    await expect(new SignalWireSmsProvider(config).verifyConnection()).resolves.toBeUndefined()
+    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(fetch).toHaveBeenCalledWith(
+      'https://example.signalwire.com/api/messaging/logs?page_size=1',
+      expect.objectContaining({ headers: expect.objectContaining({ accept: 'application/json' }) }),
+    )
+  })
+
+  it('reports the malformed HTTP 200 response without echoing its body', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response('<html>unexpected gateway page</html>', {
+          status: 200,
+          headers: { 'content-type': 'text/html' },
+        }),
+      ),
+    )
+    await expect(new SignalWireSmsProvider(config).verifyConnection()).rejects.toThrow(
+      'unexpected text/html response (200)',
     )
   })
 

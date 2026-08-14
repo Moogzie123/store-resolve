@@ -30,7 +30,7 @@ function event(
 ) {
   return { id: id('evt'), complaintId, type, actor, timestamp, metadata }
 }
-function eligibility(
+export function eligibility(
   recipient: User,
   config: AppConfig,
   storeId?: string,
@@ -45,6 +45,12 @@ function eligibility(
     return { status: 'SUPPRESSED', reason: 'MOCK mode never sends externally', provider: 'MOCK' }
   if (!recipient.smsEnabled)
     return { status: 'SUPPRESSED', reason: 'SMS is disabled for this recipient', provider: 'MOCK' }
+  if (recipient.recipientKind === 'PILOT_ADMIN')
+    return {
+      status: 'SUPPRESSED',
+      reason: 'TEST_RECIPIENT_ONLY',
+      provider: 'MOCK',
+    }
   const owner = ownerIds.includes(recipient.id)
   if (config.mode === 'FAMILY_PILOT' && !owner)
     return {

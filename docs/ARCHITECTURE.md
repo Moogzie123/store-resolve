@@ -22,4 +22,6 @@ Owners may view all stores and perform administrative mutations. View-only users
 
 Eligibility is checked server-side immediately before provider invocation. The D1 kill switch overrides severity and mode. In `FAMILY_PILOT`, only `father`, `uncle`, and `grandfather` are valid external recipients; manager records remain auditable as `SUPPRESSED / FAMILY_PILOT`. SignalWire acceptance produces `SENT`, not `DELIVERED`.
 
+The `PILOT_ADMIN` recipient is a separate manual-test capability. It is configurable only in `FAMILY_PILOT`, is accepted only by the single-recipient test endpoint, and is always rejected by complaint delivery eligibility with `TEST_RECIPIENT_ONLY`. Complaint creation and escalation never generate notifications for it.
+
 SignalWire's documented SMS status callback does not define a callback signature. The public callback accepts only a UUID message ID, retrieves that message from SignalWire with server-held credentials, and verifies its project, sender, and stored recipient before any D1 status mutation. Callback records are idempotent, and terminal delivery states cannot regress.

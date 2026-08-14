@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { createComplaint, metrics, processDeadlines, updateComplaint } from '../src/lib/workflow'
+import {
+  createComplaint,
+  eligibility,
+  metrics,
+  processDeadlines,
+  updateComplaint,
+} from '../src/lib/workflow'
 import { initialState } from '../src/lib/seed'
 import type { AppState, NewComplaint } from '../src/lib/types'
 const input: NewComplaint = {
@@ -73,6 +79,18 @@ describe('independent notification safety', () => {
     state.config = { mode: 'FULL', externalNotificationsEnabled: false }
     state.users = state.users.map((u) => ({ ...u, smsEnabled: true }))
     expect(create().complaint.notifications.every((n) => n.status === 'SUPPRESSED')).toBe(true)
+  })
+  it('never permits PILOT_ADMIN in complaint delivery, even in FULL mode', () => {
+    const pilotAdmin = state.users.find((u) => u.recipientKind === 'PILOT_ADMIN')!
+    expect(
+      eligibility(
+        { ...pilotAdmin, active: true, smsEnabled: true, phone: '+15551234567' },
+        { mode: 'FULL', externalNotificationsEnabled: true },
+      ),
+    ).toMatchObject({ status: 'SUPPRESSED', reason: 'TEST_RECIPIENT_ONLY' })
+    expect(create().complaint.notifications.some((n) => n.recipientUserId === pilotAdmin.id)).toBe(
+      false,
+    )
   })
 })
 describe('manager workflow and authorization', () => {
@@ -190,6 +208,6 @@ describe('deadlines and reporting', () => {
 describe('fixture hygiene', () => {
   it('contains only reserved fictional contact domains and numbers', () => {
     expect(state.users.every((u) => u.email.endsWith('.invalid'))).toBe(true)
-    expect(state.users.every((u) => u.phone.startsWith('+1555'))).toBe(true)
+    expect(state.users.every((u) => !u.phone || u.phone.startsWith('+1555'))).toBe(true)
   })
 })

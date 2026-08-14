@@ -993,12 +993,16 @@ function PilotControls({
   onRun: () => void
   providerReady: boolean
   onSaveConfig: (config: AppState['config']) => void
-  onSendTest: (id: 'father' | 'uncle' | 'grandfather') => void
+  onSendTest: (id: 'father' | 'uncle' | 'grandfather' | 'pilot-admin') => void
 }) {
   const owners = state.users.filter((u) => ['father', 'uncle', 'grandfather'].includes(u.id))
-  const [recipient, setRecipient] = useState<'father' | 'uncle' | 'grandfather'>('father')
+  const pilotAdmin = state.users.find((u) => u.recipientKind === 'PILOT_ADMIN')
+  const testRecipients = pilotAdmin ? [...owners, pilotAdmin] : owners
+  const [recipient, setRecipient] = useState<'father' | 'uncle' | 'grandfather' | 'pilot-admin'>(
+    'pilot-admin',
+  )
   const [confirmed, setConfirmed] = useState(false)
-  const chosen = owners.find((owner) => owner.id === recipient)!
+  const chosen = testRecipients.find((candidate) => candidate.id === recipient)
   const recentTests = state.testNotifications
     .filter((notification) => notification.recipientUserId === recipient)
     .slice(-3)
@@ -1069,6 +1073,26 @@ function PilotControls({
           ))}
         </section>
         <section className="panel settings-card">
+          <h2>Controlled test recipient</h2>
+          <p>
+            This PILOT_ADMIN destination is only for a manual FAMILY_PILOT test. It is never an
+            ownership, complaint-fanout, or escalation recipient.
+          </p>
+          {state.config.mode !== 'FAMILY_PILOT' ? (
+            <div className="danger-note">
+              <ShieldCheck />
+              <span>
+                <strong>Unavailable outside FAMILY_PILOT</strong>
+                Switch modes before securely configuring this destination.
+              </span>
+            </div>
+          ) : pilotAdmin ? (
+            <OwnerContact owner={pilotAdmin} onSaved={setState} />
+          ) : (
+            <p>PILOT_ADMIN migration is not available.</p>
+          )}
+        </section>
+        <section className="panel settings-card">
           <h2>Deadline test clock</h2>
           <p>
             Advance the effective clock by three days to exercise acknowledgment and resolution
@@ -1082,8 +1106,8 @@ function PilotControls({
         <section className="panel settings-card">
           <h2>Test notification</h2>
           <p>
-            Select exactly one ownership recipient. The provider will suppress the send unless every
-            safety gate is open.
+            Select exactly one controlled recipient. PILOT_ADMIN is manual-test-only and can never
+            receive complaint or escalation messages.
           </p>
           <select
             value={recipient}
@@ -1092,9 +1116,9 @@ function PilotControls({
               setConfirmed(false)
             }}
           >
-            {owners.map((owner) => (
-              <option value={owner.id} key={owner.id}>
-                {owner.name} · {owner.phone}
+            {testRecipients.map((candidate) => (
+              <option value={candidate.id} key={candidate.id}>
+                {candidate.name} · {candidate.phone}
               </option>
             ))}
           </select>
@@ -1110,7 +1134,7 @@ function PilotControls({
               SignalWire provider <strong>{providerReady ? 'READY' : 'NOT READY'}</strong>
             </span>
             <span>
-              Destination <strong>{chosen.phone}</strong>
+              Destination <strong>{chosen?.phone ?? 'Not configured'}</strong>
             </span>
           </div>
           <label className="confirm-row">
@@ -1119,11 +1143,20 @@ function PilotControls({
               checked={confirmed}
               onChange={(e) => setConfirmed(e.target.checked)}
             />{' '}
-            I confirm one harmless test to {chosen.name}
+            I confirm one harmless test to {chosen?.name ?? 'the selected recipient'}
           </label>
           <button
             className="secondary"
-            disabled={!confirmed}
+            disabled={
+              !confirmed ||
+              !chosen ||
+              state.config.mode !== 'FAMILY_PILOT' ||
+              !state.config.externalNotificationsEnabled ||
+              !providerReady ||
+              !chosen.active ||
+              !chosen.smsEnabled ||
+              !chosen.phone
+            }
             onClick={() => {
               onSendTest(recipient)
               setConfirmed(false)
@@ -1132,7 +1165,8 @@ function PilotControls({
             Send one confirmed test
           </button>
           <small>
-            No manager or send-to-all target exists. The server rechecks every safety gate.
+            No manager or send-to-all target exists. The server rechecks every safety gate and
+            permanently excludes PILOT_ADMIN from complaint delivery.
           </small>
           {recentTests.length > 0 && (
             <div className="test-results">

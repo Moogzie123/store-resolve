@@ -29,6 +29,8 @@ type Bindings = {
 type Variables = { user: User }
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 const ownerIds = ['father', 'uncle', 'grandfather']
+const pilotAdminId = 'pilot-admin'
+const testRecipientIds = [...ownerIds, pilotAdminId]
 const jsonError = (message: string) => ({ error: message })
 const provider = (env: Bindings) =>
   new SignalWireSmsProvider({
@@ -49,14 +51,25 @@ const publicState = (state: AppState, user: User): AppState => ({
 
 app.get('/api/health', (c) => c.json({ ok: true, service: 'store-resolve' }))
 app.post('/api/signalwire/status', async (c) => {
-  const form = await c.req.parseBody()
-  const parsed = signalWireCallbackSchema.safeParse(form)
+  let payload: unknown
+  try {
+    payload = c.req.header('content-type')?.includes('application/json')
+      ? await c.req.json()
+      : await c.req.parseBody()
+  } catch {
+    return c.json(jsonError('Invalid callback'), 400)
+  }
+  const parsed = signalWireCallbackSchema.safeParse(payload)
   if (!parsed.success) return c.json(jsonError('Invalid callback'), 400)
+  if ('project_id' in parsed.data && parsed.data.project_id !== c.env.SIGNALWIRE_PROJECT_ID)
+    return c.json(jsonError('SignalWire verification failed'), 403)
   const signalWire = provider(c.env)
   if (!signalWire.ready) return c.json(jsonError('Provider unavailable'), 503)
   let message
   try {
-    message = await signalWire.retrieveMessage(parsed.data.MessageSid)
+    message = await signalWire.retrieveMessage(
+      'id' in parsed.data ? parsed.data.id : parsed.data.MessageSid,
+    )
   } catch {
     return c.json(jsonError('SignalWire verification failed'), 403)
   }
@@ -76,6 +89,15 @@ app.use('/api/*', async (c, next) => {
 app.get('/api/bootstrap', async (c) => {
   const state = await loadState(c.env.DB)
   const user = c.get('user')
+  const signalWire = provider(c.env)
+  let providerReady = false
+  if (signalWire.ready)
+    try {
+      await signalWire.verifyConnection()
+      providerReady = true
+    } catch {
+      providerReady = false
+    }
   return c.json({
     state: publicState(state, user),
     currentUser: {
@@ -85,7 +107,7 @@ app.get('/api/bootstrap', async (c) => {
       maskedPhone: maskPhone(user.phone),
       maskedEmail: maskEmail(user.email),
     },
-    providerReady: provider(c.env).ready,
+    providerReady,
   })
 })
 app.post('/api/complaints', zValidator('json', complaintInputSchema), async (c) => {
@@ -140,11 +162,17 @@ app.put('/api/admin/contacts/:id', zValidator('json', contactSchema), async (c) 
   const user = c.get('user')
   if (!canAdmin(user)) return c.json(jsonError('Owner access required'), 403)
   const id = c.req.param('id')
-  if (!ownerIds.includes(id))
-    return c.json(jsonError('Only ownership recipients can be configured'), 400)
+  if (!testRecipientIds.includes(id))
+    return c.json(jsonError('Only controlled recipients can be configured'), 400)
   const state = await loadState(c.env.DB)
   const target = state.users.find((u) => u.id === id)
   if (!target) return c.json(jsonError('Recipient not found'), 404)
+  if (id === pilotAdminId) {
+    if (target.recipientKind !== 'PILOT_ADMIN')
+      return c.json(jsonError('Pilot recipient capability is unavailable'), 400)
+    if (state.config.mode !== 'FAMILY_PILOT')
+      return c.json(jsonError('Pilot recipient requires FAMILY_PILOT mode'), 403)
+  }
   const contact = c.req.valid('json')
   target.name = contact.name
   target.smsEnabled = contact.smsEnabled
@@ -160,8 +188,10 @@ app.post('/api/admin/test-notifications', zValidator('json', testNotificationSch
   const { recipientUserId } = c.req.valid('json')
   const state = await loadState(c.env.DB)
   const recipient = state.users.find((u) => u.id === recipientUserId)
-  if (!recipient || !ownerIds.includes(recipient.id))
-    return c.json(jsonError('Ownership recipient required'), 400)
+  if (!recipient || !testRecipientIds.includes(recipient.id))
+    return c.json(jsonError('Controlled test recipient required'), 400)
+  if (recipient.id === pilotAdminId && recipient.recipientKind !== 'PILOT_ADMIN')
+    return c.json(jsonError('Pilot recipient capability is unavailable'), 400)
   const last = await c.env.DB.prepare(
     'SELECT last_sent_at FROM test_notification_rate_limits WHERE recipient_user_id=?',
   )
@@ -235,6 +265,7 @@ async function dispatchEligible(env: Bindings, state: AppState) {
       if (!recipient) continue
       let reason: string | undefined
       if (!state.config.externalNotificationsEnabled) reason = 'EXTERNAL_NOTIFICATIONS_DISABLED'
+      else if (recipient.recipientKind === 'PILOT_ADMIN') reason = 'TEST_RECIPIENT_ONLY'
       else if (state.config.mode === 'FAMILY_PILOT' && !ownerIds.includes(recipient.id))
         reason = 'FAMILY_PILOT'
       else if (!recipient.smsEnabled || !recipient.active || !recipient.phone)

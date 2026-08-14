@@ -76,20 +76,19 @@ function safeDiagnostic(value: unknown, secrets: Array<string | undefined>): str
   return message.replace(/[\r\n\t]+/g, ' ').slice(0, 300)
 }
 
-function messageFrom(value: unknown): SignalWireMessage | undefined {
+function messageFrom(value: unknown, expectedProjectId: string): SignalWireMessage | undefined {
   if (!value || typeof value !== 'object') return undefined
   const body = value as Record<string, unknown>
   if (
-    typeof body.sid !== 'string' ||
-    typeof body.account_sid !== 'string' ||
+    typeof body.id !== 'string' ||
     typeof body.status !== 'string' ||
     typeof body.from !== 'string' ||
     typeof body.to !== 'string'
   )
     return undefined
   return {
-    sid: body.sid,
-    accountSid: body.account_sid,
+    sid: body.id,
+    accountSid: typeof body.project_id === 'string' ? body.project_id : expectedProjectId,
     status: body.status,
     from: body.from,
     to: body.to,
@@ -127,9 +126,7 @@ export class SignalWireSmsProvider implements NotificationProvider {
 
   private get apiBase() {
     const origin = signalWireOrigin(this.config.spaceUrl)
-    return origin && this.config.projectId
-      ? `${origin}/api/laml/2010-04-01/Accounts/${encodeURIComponent(this.config.projectId)}`
-      : undefined
+    return origin ? `${origin}/api/messaging` : undefined
   }
 
   private get authorization() {
@@ -139,6 +136,11 @@ export class SignalWireSmsProvider implements NotificationProvider {
   }
 
   private async responseBody(response: Response): Promise<Record<string, unknown>> {
+    const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
+    if (!contentType.includes('json'))
+      throw new Error(
+        `SignalWire returned an unexpected ${contentType.split(';')[0] || 'unknown'} response (${response.status})`,
+      )
     try {
       return (await response.json()) as Record<string, unknown>
     } catch {
@@ -150,26 +152,28 @@ export class SignalWireSmsProvider implements NotificationProvider {
     notification: Notification,
     destination: string,
   ): Promise<{ providerMessageId: string; status: 'SENT' | 'FAILED' }> {
-    if (!this.ready || !this.apiBase || !this.authorization || !this.config.from)
+    const projectId = this.config.projectId
+    if (!this.ready || !this.apiBase || !this.authorization || !this.config.from || !projectId)
       throw new Error('SignalWire is not configured')
     if (!e164.test(destination)) throw new Error('SignalWire destination must use E.164 format')
     const form = new URLSearchParams({
-      To: destination,
-      From: this.config.from,
-      Body: notification.message,
-      StatusCallback: this.statusCallbackUrl!,
+      to: destination,
+      from: this.config.from,
+      body: notification.message,
+      status_callback_url: this.statusCallbackUrl!,
     })
-    const response = await fetch(`${this.apiBase}/Messages`, {
+    const response = await fetch(`${this.apiBase}/messages`, {
       method: 'POST',
       headers: {
         authorization: this.authorization,
-        'content-type': 'application/x-www-form-urlencoded',
+        accept: 'application/json',
+        'content-type': 'application/json',
       },
-      body: form,
+      body: JSON.stringify(Object.fromEntries(form)),
     })
     const body = await this.responseBody(response)
-    const message = messageFrom(body)
-    if (!response.ok || !message)
+    const message = messageFrom(body, projectId)
+    if (response.status !== 201 || !message)
       throw new Error(
         safeDiagnostic(
           body.message ?? body.error_message ?? `SignalWire request failed (${response.status})`,
@@ -182,17 +186,15 @@ export class SignalWireSmsProvider implements NotificationProvider {
   }
 
   async retrieveMessage(messageSid: string): Promise<SignalWireMessage> {
-    if (!this.ready || !this.apiBase || !this.authorization)
+    const projectId = this.config.projectId
+    if (!this.ready || !this.apiBase || !this.authorization || !projectId)
       throw new Error('SignalWire is not configured')
     if (!uuid.test(messageSid)) throw new Error('Invalid SignalWire message identifier')
-    const response = await fetch(
-      `${this.apiBase}/Messages/${encodeURIComponent(messageSid)}.json`,
-      {
-        headers: { authorization: this.authorization },
-      },
-    )
+    const response = await fetch(`${this.apiBase}/logs/${encodeURIComponent(messageSid)}`, {
+      headers: { accept: 'application/json', authorization: this.authorization },
+    })
     const body = await this.responseBody(response)
-    const message = messageFrom(body)
+    const message = messageFrom(body, projectId)
     if (!response.ok || !message)
       throw new Error(
         safeDiagnostic(
@@ -205,6 +207,22 @@ export class SignalWireSmsProvider implements NotificationProvider {
     if (message.sid !== messageSid || message.accountSid !== this.config.projectId)
       throw new Error('SignalWire returned an unexpected message identity')
     return message
+  }
+
+  async verifyConnection(): Promise<void> {
+    if (!this.ready || !this.apiBase || !this.authorization)
+      throw new Error('SignalWire is not configured')
+    const response = await fetch(`${this.apiBase}/logs?page_size=1`, {
+      headers: { accept: 'application/json', authorization: this.authorization },
+    })
+    const body = await this.responseBody(response)
+    if (response.status !== 200 || !Array.isArray(body.data))
+      throw new Error(
+        safeDiagnostic(
+          body.message ?? body.error_message ?? `SignalWire diagnostic failed (${response.status})`,
+          [this.config.projectId, this.config.apiToken],
+        ),
+      )
   }
 }
 

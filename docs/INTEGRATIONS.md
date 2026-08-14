@@ -14,7 +14,9 @@ npx wrangler secret put PUBLIC_BASE_URL
 
 `SIGNALWIRE_SPACE_URL` is the assigned `*.signalwire.com` host, with or without `https://`. `SIGNALWIRE_PHONE_NUMBER` must be an E.164 sender owned by the project. `PUBLIC_BASE_URL` is the deployed HTTPS origin without a path or trailing slash. Readiness remains `NOT READY` unless all five values pass structural validation.
 
-The send request includes `StatusCallback=<PUBLIC_BASE_URL>/api/signalwire/status`. SignalWire's documented status callback has no documented request-signature scheme, so StoreResolve does not trust callback fields beyond the UUID message ID. Before D1 mutation, the Worker retrieves the authoritative message with its API credentials and compares project ID, message ID, sender, and the notification's stored recipient. The callback is idempotent and maps `queued`, `sending`, and `sent` to `SENT`; `delivered`, `failed`, and `undelivered` are terminal states.
+The send request uses SignalWire's JSON Messaging API and includes `status_callback_url=<PUBLIC_BASE_URL>/api/signalwire/status`. StoreResolve does not trust callback delivery state directly. Before D1 mutation, the Worker retrieves the authoritative message log with its API credentials and compares project ID, message ID, sender, and the notification's stored recipient. The callback is idempotent and maps `queued`, `sending`, and `sent` to `SENT`; `delivered`, `failed`, and `undelivered` are terminal states.
+
+Bootstrap performs a read-only authenticated message-log query. Provider readiness therefore verifies credentials, Messaging scope, JSON response shape, and API reachability without creating a message.
 
 Cloudflare Access must bypass exactly `/api/signalwire/status`, and no broader `/api` route. Remove any legacy `/api/twilio/status` bypass only after the new callback works end-to-end.
 
