@@ -107,7 +107,11 @@ export function createComplaint(
   state: AppState,
   input: NewComplaint,
   now = new Date().toISOString(),
-  options: { source?: 'MANUAL' | 'GMAIL'; actor?: string; acknowledged?: boolean } = {},
+  options: {
+    source?: 'MANUAL' | 'GMAIL' | 'MICROSOFT_GRAPH'
+    actor?: string
+    acknowledged?: boolean
+  } = {},
 ): { state: AppState; complaint: Complaint; duplicate: boolean } {
   const next = structuredClone(state)
   const existing = next.complaints.find(
@@ -172,7 +176,7 @@ export function createComplaint(
   if (acknowledged)
     complaint.events.push(
       event(complaint.id, 'DUNKIN_ACKNOWLEDGED', 'system', now, {
-        simulated: options.source !== 'GMAIL',
+        simulated: options.source === undefined || options.source === 'MANUAL',
         templateVersion: 'v1',
       }),
     )

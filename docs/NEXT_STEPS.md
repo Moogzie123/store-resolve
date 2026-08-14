@@ -5,7 +5,7 @@ The rollout order is fixed:
 1. Complete local application workflow.
 2. Connect SignalWire.
 3. Test live SMS with Father, Uncle, and Grandfather.
-4. Connect Dunkin complaint Gmail inbox.
+4. Authorize the personal Microsoft complaint mailbox through Microsoft Graph.
 5. Enable automatic Dunkin acknowledgment.
 6. Pilot real manager messaging with one store.
 7. Roll out manager messaging to all seven stores.

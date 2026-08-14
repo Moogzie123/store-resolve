@@ -172,13 +172,13 @@ export async function loadState(db: D1Database): Promise<AppState> {
       mode: (settings.notification_mode ?? 'FAMILY_PILOT') as AppState['config']['mode'],
       externalNotificationsEnabled: settings.external_notifications_enabled === 'true',
       pilotStoreId: settings.pilot_store_id || undefined,
-      gmailIngestionEnabled: settings.gmail_ingestion_enabled === 'true',
-      gmailAckEnabled: settings.gmail_ack_enabled === 'true',
+      emailIngestionEnabled: settings.email_ingestion_enabled === 'true',
+      emailAckEnabled: settings.email_ack_enabled === 'true',
       managerAckDeadlineMinutes: Number(settings.manager_ack_deadline_minutes ?? 30),
       managerResolutionTargetHours: Number(settings.manager_resolution_target_hours ?? 24),
       escalationIntervalMinutes: Number(settings.escalation_interval_minutes ?? 60),
       signalWireReconcileAfterMinutes: Number(settings.signalwire_reconcile_after_minutes ?? 10),
-      gmailSearchQuery: settings.gmail_search_query ?? 'newer_than:30d',
+      emailLookbackDays: Number(settings.email_lookback_days ?? 30),
     },
   }
 }
@@ -315,14 +315,14 @@ export async function persistState(db: D1Database, state: AppState): Promise<voi
       .bind(state.config.pilotStoreId ?? '', now),
     db
       .prepare(
-        `INSERT INTO settings(key,value,updated_at) VALUES('gmail_ingestion_enabled',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`,
+        `INSERT INTO settings(key,value,updated_at) VALUES('email_ingestion_enabled',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`,
       )
-      .bind(String(Boolean(state.config.gmailIngestionEnabled)), now),
+      .bind(String(Boolean(state.config.emailIngestionEnabled)), now),
     db
       .prepare(
-        `INSERT INTO settings(key,value,updated_at) VALUES('gmail_ack_enabled',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`,
+        `INSERT INTO settings(key,value,updated_at) VALUES('email_ack_enabled',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`,
       )
-      .bind(String(Boolean(state.config.gmailAckEnabled)), now),
+      .bind(String(Boolean(state.config.emailAckEnabled)), now),
     db
       .prepare(
         `INSERT INTO settings(key,value,updated_at) VALUES('manager_ack_deadline_minutes',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`,
@@ -345,9 +345,9 @@ export async function persistState(db: D1Database, state: AppState): Promise<voi
       .bind(String(state.config.signalWireReconcileAfterMinutes ?? 10), now),
     db
       .prepare(
-        `INSERT INTO settings(key,value,updated_at) VALUES('gmail_search_query',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`,
+        `INSERT INTO settings(key,value,updated_at) VALUES('email_lookback_days',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`,
       )
-      .bind(state.config.gmailSearchQuery ?? 'newer_than:30d', now),
+      .bind(String(state.config.emailLookbackDays ?? 30), now),
   )
   for (let i = 0; i < statements.length; i += 50) await db.batch(statements.slice(i, i + 50))
 }

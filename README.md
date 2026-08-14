@@ -1,6 +1,6 @@
 # StoreResolve
 
-Production complaint operations for a multi-location Dunkin franchise group. React is served by an authenticated Hono Worker; Cloudflare D1 is authoritative for Gmail ingestion, complaint lifecycle, routing, audits, notifications, callbacks, escalation, administration, and reporting.
+Production complaint operations for a multi-location Dunkin franchise group. React is served by an authenticated Hono Worker; Cloudflare D1 is authoritative for Microsoft Graph mail ingestion, complaint lifecycle, routing, audits, notifications, callbacks, escalation, administration, and reporting.
 
 ## Local development
 
@@ -27,7 +27,7 @@ pnpm test:e2e
 
 The Playwright suite exercises the Worker+D1 path, refresh persistence, separate authenticated sessions, authorization, and the test-message confirmation guard. No live SMS is sent by tests. Default production state is `FAMILY_PILOT` with external notifications disabled.
 
-Production SMS uses the server-side SignalWire adapter. Gmail uses an isolated OAuth provider with deterministic ingestion and exactly-once acknowledgment state. A five-minute Cron Trigger runs ingestion (when enabled), SLA escalation, and stale SignalWire reconciliation. All external-I/O switches default off.
+Production SMS uses the server-side SignalWire adapter. Microsoft Graph uses delegated OAuth with deterministic ingestion and exactly-once acknowledgment state for the personal Microsoft complaint mailbox. A five-minute Cron Trigger runs ingestion (when enabled), SLA escalation, and stale SignalWire reconciliation. All external-I/O switches default off.
 
 Operator documentation:
 

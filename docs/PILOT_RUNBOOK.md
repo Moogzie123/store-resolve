@@ -2,28 +2,28 @@
 
 Every external-I/O step requires fresh approval. Stop immediately if observed identity, routing, or recipient data differs from the expected masked value.
 
-## 1. Connect Gmail read-only capability
+## 1. Authorize Microsoft Graph delegated mail
 
-1. Complete the OAuth setup in `INTEGRATIONS.md` with `gmail.readonly` and `gmail.send`.
-2. Store all four Gmail values with interactive `wrangler secret put` commands.
-3. Keep Gmail ingestion and acknowledgment off.
-4. Deploy and confirm Gmail reports `READY` using the read-only profile diagnostic.
+1. Complete the OAuth setup in `INTEGRATIONS.md` with `offline_access`, `Mail.Read`, and `Mail.Send`.
+2. Store the Microsoft client ID, refresh token, mailbox address, and `consumers` authority through Wrangler.
+3. Keep Microsoft Graph ingestion and acknowledgment off.
+4. Deploy and confirm Microsoft Graph reports configuration `READY` without enabling ingestion.
 
 ## 2. Ingest one real complaint without communication
 
-1. Confirm `FAMILY_PILOT`, external SMS off, Gmail acknowledgment off.
+1. Confirm `FAMILY_PILOT`, external SMS off, email acknowledgment off.
 2. Obtain explicit approval to access one real complaint email.
-3. Narrow `gmail_search_query` to the approved message/reference.
-4. Enable Gmail ingestion for one polling cycle, then turn it off.
-5. Verify one `gmail_messages` row, one complaint or documented routing-review result, exact Gmail IDs, store routing evidence, and no acknowledgment/notification provider calls.
+3. Set the Inbox lookback to the narrowest approved period.
+4. Enable Microsoft Graph ingestion for one polling cycle, then turn it off.
+5. Verify one durable message row, one complaint or documented routing-review result, exact Graph message/conversation IDs, store routing evidence, and no acknowledgment/notification provider calls.
 
 ## 3. Approve one neutral acknowledgment
 
 1. Review the complaint/thread and neutral template.
 2. Obtain explicit approval for exactly one reply.
-3. Enable Gmail acknowledgment and ingestion for the controlled complaint.
+3. Enable Microsoft Graph acknowledgment and ingestion for the controlled complaint.
 4. Verify `PENDING -> IN_FLIGHT -> SENT`, provider message ID, original thread ID, and one audit event.
-5. Turn Gmail acknowledgment off. Do not retry an ambiguous result without inspecting Gmail Sent.
+5. Turn email acknowledgment off. Do not retry an ambiguous result without inspecting Outlook Sent Items.
 
 ## 4. Pilot ownership SMS
 

@@ -27,4 +27,4 @@
 - [ ] Configure SignalWire secrets and one real owner in D1.
 - [ ] Complete one-phone live SMS delivery validation.
 - [ ] Test Father, Uncle, and Grandfather individually.
-- [ ] Connect Gmail only after family SMS validation succeeds.
+- [ ] Authorize Microsoft Graph mail only after explicit mailbox-access approval.

@@ -18,7 +18,7 @@ import { authenticate, canAdmin, canViewComplaint, maskEmail, maskPhone } from '
 import { loadState, persistState, type D1Database } from './d1'
 import { SignalWireSmsProvider } from './providers'
 import { applySignalWireCallback, reconcileSignalWireMessage } from './callbacks'
-import { GmailProvider } from './gmail'
+import { MicrosoftGraphProvider } from './microsoft-graph'
 import { runScheduledOperations } from './operations'
 import { buildReport } from './reporting'
 
@@ -29,10 +29,11 @@ type Bindings = Env & {
   SIGNALWIRE_SPACE_URL?: string
   SIGNALWIRE_PHONE_NUMBER?: string
   PUBLIC_BASE_URL?: string
-  GMAIL_CLIENT_ID?: string
-  GMAIL_CLIENT_SECRET?: string
-  GMAIL_REFRESH_TOKEN?: string
-  GMAIL_MAILBOX_ADDRESS?: string
+  MS_CLIENT_ID?: string
+  MS_CLIENT_SECRET?: string
+  MS_REFRESH_TOKEN?: string
+  MS_MAILBOX_ADDRESS?: string
+  MS_TENANT?: string
 }
 type Variables = { user: User }
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -48,12 +49,13 @@ const provider = (env: Bindings) =>
     from: env.SIGNALWIRE_PHONE_NUMBER,
     publicBaseUrl: env.PUBLIC_BASE_URL,
   })
-const gmailProvider = (env: Bindings) =>
-  new GmailProvider({
-    clientId: env.GMAIL_CLIENT_ID,
-    clientSecret: env.GMAIL_CLIENT_SECRET,
-    refreshToken: env.GMAIL_REFRESH_TOKEN,
-    mailboxAddress: env.GMAIL_MAILBOX_ADDRESS,
+const emailProvider = (env: Bindings) =>
+  new MicrosoftGraphProvider({
+    clientId: env.MS_CLIENT_ID,
+    clientSecret: env.MS_CLIENT_SECRET,
+    refreshToken: env.MS_REFRESH_TOKEN,
+    mailboxAddress: env.MS_MAILBOX_ADDRESS,
+    tenant: env.MS_TENANT,
   })
 const auditAdminChange = async (
   db: D1Database,
@@ -136,16 +138,9 @@ app.get('/api/bootstrap', async (c) => {
     } catch {
       providerReady = false
     }
-  const gmail = gmailProvider(c.env)
-  let gmailReady = false
-  if (gmail.ready)
-    try {
-      await gmail.verifyConnection()
-      gmailReady = true
-    } catch {
-      gmailReady = false
-    }
-  const [lastGmailSync, lastBackgroundRun, failures] = await Promise.all([
+  // Readiness is configuration-only. Mailbox access occurs only inside the disabled-by-default poller.
+  const microsoftGraphReady = emailProvider(c.env).ready
+  const [lastEmailSync, lastBackgroundRun, failures] = await Promise.all([
     c.env.DB.prepare(
       `SELECT completed_at FROM background_job_runs WHERE job_name='OPERATIONS' AND outcome IN ('SUCCESS','PARTIAL') ORDER BY started_at DESC LIMIT 1`,
     ).first<{ completed_at: string }>(),
@@ -167,10 +162,10 @@ app.get('/api/bootstrap', async (c) => {
     },
     providerReady,
     health: {
-      gmailReady,
-      gmailIngestionEnabled: Boolean(state.config.gmailIngestionEnabled),
-      gmailAckEnabled: Boolean(state.config.gmailAckEnabled),
-      lastGmailSyncAt: lastGmailSync?.completed_at,
+      microsoftGraphReady,
+      emailIngestionEnabled: Boolean(state.config.emailIngestionEnabled),
+      emailAckEnabled: Boolean(state.config.emailAckEnabled),
+      lastEmailSyncAt: lastEmailSync?.completed_at,
       signalWireReady: providerReady,
       externalNotificationsEnabled: state.config.externalNotificationsEnabled,
       rolloutMode: state.config.mode,
@@ -521,6 +516,6 @@ export default {
     _controller: { cron: string; scheduledTime: number },
     env: Bindings,
   ): Promise<void> {
-    await runScheduledOperations(env, gmailProvider(env), provider(env), dispatchEligible)
+    await runScheduledOperations(env, emailProvider(env), provider(env), dispatchEligible)
   },
 }

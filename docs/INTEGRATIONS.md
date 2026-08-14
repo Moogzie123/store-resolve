@@ -14,50 +14,39 @@ npx wrangler secret put PUBLIC_BASE_URL
 
 The Compatibility Create Message request is form encoded with `To`, `From`, `Body`, and `StatusCallback=<PUBLIC_BASE_URL>/api/signalwire/status`. StoreResolve never trusts callback status fields directly. It retrieves the provider record server-side and verifies project/from/to identity before updating D1.
 
-The callback is the fast path. The scheduled fallback checks `SENT` records older than `signalwire_reconcile_after_minutes`, performs the same authoritative identity verification, never sends a message, never regresses a terminal state, and records transitions in `signalwire_reconciliations` rather than `notification_callbacks`.
+## Microsoft Graph mail
 
-## Gmail
-
-StoreResolve uses direct Gmail REST calls through `GmailProvider`. OAuth credentials and mailbox identity exist only in Worker secrets:
+Microsoft Graph is the only active production mail provider. It uses delegated authorization-code OAuth with PKCE and refresh-token support for a personal Microsoft account. Credentials and mailbox identity exist only in Worker secrets:
 
 ```bash
-npx wrangler secret put GMAIL_CLIENT_ID
-npx wrangler secret put GMAIL_CLIENT_SECRET
-npx wrangler secret put GMAIL_REFRESH_TOKEN
-npx wrangler secret put GMAIL_MAILBOX_ADDRESS
+npx wrangler secret put MS_CLIENT_ID
+npx wrangler secret put MS_REFRESH_TOKEN
+npx wrangler secret put MS_MAILBOX_ADDRESS
+npx wrangler secret put MS_TENANT
 ```
 
-Minimum scopes:
+Required delegated scopes:
 
 ```text
-https://www.googleapis.com/auth/gmail.readonly
-https://www.googleapis.com/auth/gmail.send
+offline_access
+Mail.Read
+Mail.Send
 ```
 
-`gmail.modify` is not required: StoreResolve does not depend on unread state, labels, or mailbox mutation. Polling is intentionally used instead of Pub/Sub for this low-volume mailbox. The high-water behavior is durable Gmail message-ID idempotency plus a bounded search query (default `newer_than:30d`).
+The production authority is `consumers`. StoreResolve requests immutable Outlook message IDs, polls only the Inbox in a bounded lookback window, retrieves message/conversation/Internet IDs, sender and recipients, timestamps, headers, and body metadata, and never uses read/unread state as application state. Replies use `POST /me/messages/{id}/reply`, which preserves the original message context. Read operations have bounded retry; a send is never automatically retried.
 
-The provider supports:
+Email ingestion and acknowledgment have separate D1 switches. Both default off. Provider readiness is configuration-only and never reads mail or sends a reply.
 
-- OAuth refresh-token exchange;
-- bounded retries for rate limits and temporary failures on read operations;
-- full message and thread metadata;
-- recursive text/plain extraction with sanitized HTML fallback;
-- Message-ID, In-Reply-To, and References headers;
-- replies in the original Gmail thread;
-- no automatic retry of an ambiguous send.
+## Microsoft personal-account OAuth setup gate
 
-Gmail ingestion and acknowledgment have separate D1 switches. Both default off. Provider readiness alone never reads mail or sends a reply.
+In Microsoft Entra admin center:
 
-## Gmail OAuth setup gate
+1. Open **Identity -> Applications -> App registrations -> New registration**.
+2. Name it `StoreResolve Production Mail`.
+3. For **Supported account types**, select **Personal Microsoft accounts only** (`PersonalMicrosoftAccount`).
+4. Register the app, then open **Authentication -> Add a platform -> Mobile and desktop applications**.
+5. Select the native redirect URI `http://localhost` and enable public client flows.
+6. Open **API permissions -> Add a permission -> Microsoft Graph -> Delegated permissions**. Add only `Mail.Read` and `Mail.Send`; `offline_access` is requested by the OAuth flow.
+7. In the repository terminal, set `MS_CLIENT_ID` only for that process and run `pnpm oauth:microsoft`. Sign in to the MSN mailbox and consent. The helper uses PKCE and writes the refresh token directly to Cloudflare through Wrangler without displaying it.
 
-In Google Cloud Console:
-
-1. Select or create the StoreResolve production project.
-2. Open **APIs & Services -> Library** and enable **Gmail API**.
-3. Open **Google Auth Platform -> Branding/Audience/Data Access** and configure the consent screen.
-4. Add only `gmail.readonly` and `gmail.send` under Data Access.
-5. Open **Clients -> Create client -> Web application**.
-6. For a one-mailbox operator-assisted authorization, use Google's OAuth 2.0 Playground redirect URI exactly: `https://developers.google.com/oauthplayground`.
-7. In OAuth Playground settings, select **Use your own OAuth credentials**, request the two scopes, authorize the complaint mailbox, exchange the code, and copy the refresh token directly into the interactive Wrangler secret prompt.
-
-The client ID is not a password but should still be configured through Wrangler. Client secret, refresh token, access token, and mailbox address must never be pasted into chat, committed, or logged.
+No client secret is required for this public-client PKCE flow. Refresh/access tokens and the mailbox address must never be pasted into chat, committed, or logged. The dormant Gmail adapter has no production binding or readiness path.

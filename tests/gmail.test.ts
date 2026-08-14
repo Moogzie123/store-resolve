@@ -222,6 +222,7 @@ describe('durable Gmail ingestion and acknowledgment idempotency', () => {
       '0002_persistence_and_auth.sql',
       '0003_pilot_admin_recipient.sql',
       '0004_v1_operations.sql',
+      '0005_microsoft_graph_provider.sql',
     ]) {
       const path = fileURLToPath(new URL(`../drizzle/${name}`, import.meta.url))
       await db.exec(await readFile(path, 'utf8'))
@@ -284,11 +285,11 @@ describe('durable Gmail ingestion and acknowledgment idempotency', () => {
     expect(
       await acknowledgeComplaint(db, gmail, result.complaintId!, {
         ...state.config,
-        gmailAckEnabled: false,
+        emailAckEnabled: false,
       }),
     ).toBe('DISABLED')
     expect(sendAcknowledgment).not.toHaveBeenCalled()
-    const enabled = { ...state.config, gmailAckEnabled: true }
+    const enabled = { ...state.config, emailAckEnabled: true }
     expect(await acknowledgeComplaint(db, gmail, result.complaintId!, enabled)).toBe('SENT')
     expect(await acknowledgeComplaint(db, gmail, result.complaintId!, enabled)).toBe(
       'ALREADY_HANDLED',

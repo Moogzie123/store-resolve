@@ -24,13 +24,13 @@ export const configSchema = z.object({
   mode: z.enum(['MOCK', 'FAMILY_PILOT', 'SINGLE_STORE_PILOT', 'FULL']),
   externalNotificationsEnabled: z.boolean(),
   pilotStoreId: z.string().optional(),
-  gmailIngestionEnabled: z.boolean().optional().default(false),
-  gmailAckEnabled: z.boolean().optional().default(false),
+  emailIngestionEnabled: z.boolean().optional().default(false),
+  emailAckEnabled: z.boolean().optional().default(false),
   managerAckDeadlineMinutes: z.number().int().min(5).max(10_080).optional().default(30),
   managerResolutionTargetHours: z.number().int().min(1).max(720).optional().default(24),
   escalationIntervalMinutes: z.number().int().min(15).max(10_080).optional().default(60),
   signalWireReconcileAfterMinutes: z.number().int().min(5).max(1_440).optional().default(10),
-  gmailSearchQuery: z.string().trim().min(1).max(500).optional().default('newer_than:30d'),
+  emailLookbackDays: z.number().int().min(1).max(365).optional().default(30),
 })
 export const contactSchema = z.object({
   name: z.string().trim().min(1).max(100),

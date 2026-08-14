@@ -178,8 +178,8 @@ export default function App() {
                 : 'External messages off'}
             </strong>
             <span>
-              Gmail intake {state.config.gmailIngestionEnabled ? 'on' : 'off'} Â· replies{' '}
-              {state.config.gmailAckEnabled ? 'on' : 'off'}
+              Microsoft mail intake {state.config.emailIngestionEnabled ? 'on' : 'off'} · replies{' '}
+              {state.config.emailAckEnabled ? 'on' : 'off'}
             </span>
           </div>
         </div>
@@ -677,7 +677,7 @@ function Simulator({
       <PageTitle
         eyebrow="Development tool"
         title="Complaint simulator"
-        body="Run a realistic complaint through the same domain workflow used by future Gmail ingestion."
+        body="Run a realistic complaint through the same domain workflow used by Microsoft Graph ingestion."
       />
       <div className="sim-layout">
         <form
@@ -1484,14 +1484,15 @@ function PilotControls({
           </div>
         </section>
         <section className="panel settings-card">
-          <h2>Gmail operations</h2>
+          <h2>Microsoft Graph mail</h2>
           <p>
             Intake and outbound acknowledgment are independent server-enforced controls. Both remain
             off until the mailbox OAuth secrets are configured and a pilot is approved.
           </p>
           <div className="readiness-list">
             <span>
-              Gmail provider <strong>{health?.gmailReady ? 'READY' : 'NOT READY'}</strong>
+              Microsoft Graph provider{' '}
+              <strong>{health?.microsoftGraphReady ? 'READY' : 'NOT READY'}</strong>
             </span>
             <span>
               Last background run <strong>{fmt(health?.lastBackgroundRunAt)}</strong>
@@ -1499,15 +1500,15 @@ function PilotControls({
           </div>
           <label className="toggle-row">
             <span>
-              <strong>Gmail ingestion</strong>
+              <strong>Email ingestion</strong>
               <small>Reads and persists matching messages; does not send a reply.</small>
             </span>
             <button
-              className={cx('toggle', state.config.gmailIngestionEnabled && 'on')}
+              className={cx('toggle', state.config.emailIngestionEnabled && 'on')}
               onClick={() =>
                 onSaveConfig({
                   ...state.config,
-                  gmailIngestionEnabled: !state.config.gmailIngestionEnabled,
+                  emailIngestionEnabled: !state.config.emailIngestionEnabled,
                 })
               }
             >
@@ -1517,23 +1518,26 @@ function PilotControls({
           <label className="toggle-row">
             <span>
               <strong>Automatic acknowledgment</strong>
-              <small>Replies once in the source Gmail thread when enabled.</small>
+              <small>Replies once in the source Outlook conversation when enabled.</small>
             </span>
             <button
-              className={cx('toggle', state.config.gmailAckEnabled && 'on')}
+              className={cx('toggle', state.config.emailAckEnabled && 'on')}
               onClick={() =>
-                onSaveConfig({ ...state.config, gmailAckEnabled: !state.config.gmailAckEnabled })
+                onSaveConfig({ ...state.config, emailAckEnabled: !state.config.emailAckEnabled })
               }
             >
               <i />
             </button>
           </label>
           <label>
-            Gmail polling query
+            Inbox lookback (days)
             <input
-              value={state.config.gmailSearchQuery ?? 'newer_than:30d'}
+              type="number"
+              min="1"
+              max="365"
+              value={state.config.emailLookbackDays ?? 30}
               onChange={(event) =>
-                onSaveConfig({ ...state.config, gmailSearchQuery: event.target.value })
+                onSaveConfig({ ...state.config, emailLookbackDays: Number(event.target.value) })
               }
             />
           </label>

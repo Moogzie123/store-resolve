@@ -86,7 +86,7 @@ export interface Complaint {
   assignedManagerId?: string
   subject: string
   complaintText: string
-  source?: 'MANUAL' | 'GMAIL'
+  source?: 'MANUAL' | 'GMAIL' | 'MICROSOFT_GRAPH'
   gmailMessageId?: string
   gmailThreadId?: string
   sourceSender?: string
@@ -131,20 +131,20 @@ export interface AppConfig {
   mode: RolloutMode
   externalNotificationsEnabled: boolean
   pilotStoreId?: string
-  gmailIngestionEnabled?: boolean
-  gmailAckEnabled?: boolean
+  emailIngestionEnabled?: boolean
+  emailAckEnabled?: boolean
   managerAckDeadlineMinutes?: number
   managerResolutionTargetHours?: number
   escalationIntervalMinutes?: number
   signalWireReconcileAfterMinutes?: number
-  gmailSearchQuery?: string
+  emailLookbackDays?: number
 }
 
 export interface IntegrationHealth {
-  gmailReady: boolean
-  gmailIngestionEnabled: boolean
-  gmailAckEnabled: boolean
-  lastGmailSyncAt?: string
+  microsoftGraphReady: boolean
+  emailIngestionEnabled: boolean
+  emailAckEnabled: boolean
+  lastEmailSyncAt?: string
   signalWireReady: boolean
   externalNotificationsEnabled: boolean
   rolloutMode: RolloutMode

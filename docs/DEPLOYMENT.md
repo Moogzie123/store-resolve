@@ -16,7 +16,7 @@ pnpm db:migrate:remote
 pnpm deploy
 ```
 
-`wrangler.toml` binds the production `store-resolve` D1 database, serves `dist`, enables Worker observability, and registers `*/5 * * * *` in UTC. Migration `0004_v1_operations.sql` is additive and preserves existing complaints, users, contacts, notification history, and SignalWire callback data.
+`wrangler.toml` binds the production `store-resolve` D1 database, serves `dist`, enables Worker observability, and registers `*/5 * * * *` in UTC. Migration `0005_microsoft_graph_provider.sql` adds provider-neutral mail switches, forces both OFF, and preserves existing complaints, users, contacts, notification history, and SignalWire callback data.
 
 Before and after deployment, verify:
 
@@ -44,8 +44,8 @@ The D1 settings remain authoritative after deploy:
 
 - `notification_mode=FAMILY_PILOT`
 - `external_notifications_enabled=false`
-- `gmail_ingestion_enabled=false`
-- `gmail_ack_enabled=false`
+- `email_ingestion_enabled=false`
+- `email_ack_enabled=false`
 
 Deploying code, migrations, or Cron Triggers does not send an email or SMS while these switches are off.
 

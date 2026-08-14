@@ -2,8 +2,8 @@ import { processDeadlines } from '../src/lib/workflow'
 import { reconcileStaleSignalWireNotification } from './callbacks'
 import type { D1Database } from './d1'
 import { loadState, persistState } from './d1'
-import type { GmailProvider } from './gmail'
-import { pollGmail } from './ingestion'
+import type { EmailProvider } from './email-provider'
+import { pollEmail } from './ingestion'
 import type { SignalWireSmsProvider } from './providers'
 
 export interface OperationsBindings {
@@ -81,7 +81,7 @@ async function recordEscalations(
 
 export async function runScheduledOperations<T extends OperationsBindings>(
   env: T,
-  gmail: GmailProvider,
+  emailProvider: EmailProvider,
   signalWire: SignalWireSmsProvider,
   dispatchEligible: (env: T, state: Awaited<ReturnType<typeof loadState>>) => Promise<void>,
 ): Promise<void> {
@@ -115,15 +115,15 @@ export async function runScheduledOperations<T extends OperationsBindings>(
       signalWire,
       deadlines.config.signalWireReconcileAfterMinutes ?? 10,
     )
-    const gmailResult = await pollGmail(env.DB, gmail, deadlines.config)
+    const emailResult = await pollEmail(env.DB, emailProvider, deadlines.config)
     const completedAt = new Date().toISOString()
     await env.DB.prepare(
       `UPDATE background_job_runs SET completed_at=?,outcome=?,processed_count=?,error_code=NULL WHERE id=?`,
     )
       .bind(
         completedAt,
-        gmailResult.failures ? 'PARTIAL' : 'SUCCESS',
-        gmailResult.processed + reconciled,
+        emailResult.failures ? 'PARTIAL' : 'SUCCESS',
+        emailResult.processed + reconciled,
         runId,
       )
       .run()

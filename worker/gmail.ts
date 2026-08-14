@@ -180,7 +180,8 @@ export class GmailProvider {
     await this.request<{ emailAddress: string }>('/profile')
   }
 
-  async listMessageIds(query: string, maxResults = 25): Promise<string[]> {
+  async listMessageIds(lookbackDays: number, maxResults = 25): Promise<string[]> {
+    const query = `newer_than:${Math.max(1, Math.min(365, lookbackDays))}d`
     const params = new URLSearchParams({ q: query, maxResults: String(Math.min(maxResults, 100)) })
     const page = await this.request<{ messages?: Array<{ id: string }> }>(`/messages?${params}`)
     return (page.messages ?? []).map((item) => item.id)

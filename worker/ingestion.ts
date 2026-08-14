@@ -2,10 +2,10 @@ import type { AppConfig, Complaint, Severity } from '../src/lib/types'
 import { createComplaint } from '../src/lib/workflow'
 import type { D1Database } from './d1'
 import { loadState, persistState } from './d1'
-import type { GmailProvider, NormalizedGmailMessage } from './gmail'
-import { GmailProviderError } from './gmail'
+import type { EmailProvider, NormalizedEmailMessage } from './email-provider'
+import { EmailProviderError } from './email-provider'
 
-export type GmailProcessingStatus =
+export type EmailProcessingStatus =
   | 'PROCESSED'
   | 'IGNORED'
   | 'ROUTING_REVIEW'
@@ -35,7 +35,7 @@ const normalizeAlias = (value: string) =>
     .replace(/[^a-z0-9]/g, '')
 const first = (value: string, pattern: RegExp) => value.match(pattern)?.[1]?.trim()
 
-export function extractComplaint(message: NormalizedGmailMessage): ComplaintExtraction {
+export function extractComplaint(message: NormalizedEmailMessage): ComplaintExtraction {
   const combined = `${message.subject}\n${message.textBody}`
   const isComplaint =
     /\b(complaint|guest concern|customer concern|customer issue|case id|reference id)\b/i.test(
@@ -116,7 +116,7 @@ async function recordIntegrationEvent(
     )
     .bind(
       crypto.randomUUID(),
-      'GMAIL',
+      'MICROSOFT_GRAPH',
       eventType,
       entityId,
       outcome,
@@ -126,15 +126,15 @@ async function recordIntegrationEvent(
     .run()
 }
 
-export async function ingestGmailMessage(
+export async function ingestEmailMessage(
   db: D1Database,
-  message: NormalizedGmailMessage,
-): Promise<{ status: GmailProcessingStatus; complaintId?: string }> {
+  message: NormalizedEmailMessage,
+): Promise<{ status: EmailProcessingStatus; complaintId?: string }> {
   const now = new Date().toISOString()
   const prior = await db
     .prepare('SELECT processing_status,complaint_id FROM gmail_messages WHERE gmail_message_id=?')
     .bind(message.id)
-    .first<{ processing_status: GmailProcessingStatus; complaint_id: string | null }>()
+    .first<{ processing_status: EmailProcessingStatus; complaint_id: string | null }>()
   if (prior && !['FAILED_PARSING', 'FAILED_PERSISTENCE'].includes(prior.processing_status))
     return { status: 'DUPLICATE', complaintId: prior.complaint_id ?? undefined }
   if (!prior)
@@ -190,7 +190,7 @@ export async function ingestGmailMessage(
       followUps.push({
         receivedAt: message.internalDate,
         text: extraction.details,
-        gmailMessageId: message.id,
+        emailMessageId: message.id,
       })
       await db.batch([
         db
@@ -203,13 +203,13 @@ export async function ingestGmailMessage(
           .bind(existingId, now, now, message.id),
         db
           .prepare(
-            `INSERT INTO complaint_events(id,complaint_id,event_type,actor,timestamp,metadata) VALUES(?,?,'FOLLOW_UP_RECEIVED','gmail',?,?)`,
+            `INSERT INTO complaint_events(id,complaint_id,event_type,actor,timestamp,metadata) VALUES(?,?,'FOLLOW_UP_RECEIVED','microsoft-graph',?,?)`,
           )
           .bind(
             crypto.randomUUID(),
             existingId,
             now,
-            JSON.stringify({ gmailMessageId: message.id }),
+            JSON.stringify({ emailMessageId: message.id, provider: 'MICROSOFT_GRAPH' }),
           ),
       ])
       await recordIntegrationEvent(db, 'FOLLOW_UP_INGESTED', message.id, 'SUCCESS')
@@ -220,7 +220,7 @@ export async function ingestGmailMessage(
     const result = createComplaint(
       state,
       {
-        externalCaseId: extraction.externalCaseId ?? `GMAIL-${message.id}`,
+        externalCaseId: extraction.externalCaseId ?? `MSGRAPH-${message.id}`,
         storeNumber: route.storeNumber ?? 'UNROUTED',
         subject: message.subject,
         complaintText: extraction.details || '(No complaint body supplied)',
@@ -228,10 +228,10 @@ export async function ingestGmailMessage(
         severity: extraction.severity,
       },
       message.internalDate,
-      { source: 'GMAIL', actor: 'gmail', acknowledged: false },
+      { source: 'MICROSOFT_GRAPH', actor: 'microsoft-graph', acknowledged: false },
     )
     Object.assign(result.complaint, {
-      source: 'GMAIL',
+      source: 'MICROSOFT_GRAPH',
       gmailMessageId: message.id,
       gmailThreadId: message.threadId,
       sourceSender: message.sender,
@@ -243,7 +243,7 @@ export async function ingestGmailMessage(
       routingReason: route.reason,
     } satisfies Partial<Complaint>)
     await persistState(db, result.state)
-    const status: GmailProcessingStatus = result.complaint.storeId ? 'PROCESSED' : 'ROUTING_REVIEW'
+    const status: EmailProcessingStatus = result.complaint.storeId ? 'PROCESSED' : 'ROUTING_REVIEW'
     await db
       .prepare(
         `UPDATE gmail_messages SET complaint_id=?,processing_status=?,processing_detail=?,acknowledgment_status='PENDING',processed_at=?,updated_at=? WHERE gmail_message_id=?`,
@@ -275,11 +275,11 @@ export const neutralAcknowledgment =
 
 export async function acknowledgeComplaint(
   db: D1Database,
-  gmail: GmailProvider,
+  emailProvider: EmailProvider,
   complaintId: string,
   config: AppConfig,
 ): Promise<'DISABLED' | 'SENT' | 'ALREADY_HANDLED' | 'FAILED'> {
-  if (!config.gmailAckEnabled) return 'DISABLED'
+  if (!config.emailAckEnabled) return 'DISABLED'
   const source = await db
     .prepare(
       `SELECT gm.*,c.acknowledgement_status FROM gmail_messages gm JOIN complaints c ON c.id=gm.complaint_id WHERE gm.complaint_id=? AND gm.is_follow_up=0 ORDER BY gm.first_seen_at LIMIT 1`,
@@ -287,7 +287,7 @@ export async function acknowledgeComplaint(
     .bind(complaintId)
     .first<Record<string, unknown>>()
   if (!source) return 'FAILED'
-  const idempotencyKey = `gmail-ack:${complaintId}`
+  const idempotencyKey = `email-ack:${complaintId}`
   const now = new Date().toISOString()
   await db
     .prepare(
@@ -314,7 +314,7 @@ export async function acknowledgeComplaint(
     )
     .bind(now, acknowledgment.id)
     .run()
-  const message: NormalizedGmailMessage = {
+  const message: NormalizedEmailMessage = {
     id: String(source.gmail_message_id),
     threadId: String(source.gmail_thread_id),
     internalDate: String(source.internal_date),
@@ -327,14 +327,14 @@ export async function acknowledgeComplaint(
     textBody: '',
   }
   try {
-    const providerMessageId = await gmail.sendAcknowledgment(message, neutralAcknowledgment)
+    const providerMessageId = await emailProvider.sendAcknowledgment(message, neutralAcknowledgment)
     const sentAt = new Date().toISOString()
     await db.batch([
       db
         .prepare(
           `UPDATE email_acknowledgments SET status='SENT',provider_message_id=?,sent_at=?,updated_at=? WHERE id=? AND status='IN_FLIGHT'`,
         )
-        .bind(providerMessageId, sentAt, sentAt, acknowledgment.id),
+        .bind(providerMessageId ?? null, sentAt, sentAt, acknowledgment.id),
       db
         .prepare(
           `UPDATE complaints SET dunkin_acknowledged_at=?,acknowledgement_status='SENT',acknowledgment_body=?,updated_at=? WHERE id=?`,
@@ -347,14 +347,19 @@ export async function acknowledgeComplaint(
         .bind(sentAt, message.id),
       db
         .prepare(
-          `INSERT INTO complaint_events(id,complaint_id,event_type,actor,timestamp,metadata) VALUES(?,?,'DUNKIN_ACKNOWLEDGED','gmail',?,?)`,
+          `INSERT INTO complaint_events(id,complaint_id,event_type,actor,timestamp,metadata) VALUES(?,?,'DUNKIN_ACKNOWLEDGED','microsoft-graph',?,?)`,
         )
-        .bind(crypto.randomUUID(), complaintId, sentAt, JSON.stringify({ providerMessageId })),
+        .bind(
+          crypto.randomUUID(),
+          complaintId,
+          sentAt,
+          JSON.stringify({ provider: 'MICROSOFT_GRAPH', providerMessageId }),
+        ),
     ])
     await recordIntegrationEvent(db, 'ACKNOWLEDGMENT_SENT', complaintId, 'SUCCESS')
     return 'SENT'
   } catch (error) {
-    const code = error instanceof GmailProviderError ? error.code : 'GMAIL_SEND_UNKNOWN'
+    const code = error instanceof EmailProviderError ? error.code : 'MS_GRAPH_SEND_UNKNOWN'
     const failedAt = new Date().toISOString()
     await db.batch([
       db
@@ -371,25 +376,29 @@ export async function acknowledgeComplaint(
   }
 }
 
-export async function pollGmail(
+export async function pollEmail(
   db: D1Database,
-  gmail: GmailProvider,
+  emailProvider: EmailProvider,
   config: AppConfig,
 ): Promise<{ processed: number; failures: number }> {
-  if (!config.gmailIngestionEnabled || !gmail.ready) return { processed: 0, failures: 0 }
-  const ids = await gmail.listMessageIds(config.gmailSearchQuery ?? 'newer_than:30d')
+  if (!config.emailIngestionEnabled || !emailProvider.ready) return { processed: 0, failures: 0 }
+  await emailProvider.verifyConnection()
+  const ids = await emailProvider.listMessageIds(config.emailLookbackDays ?? 30)
   let processed = 0
   let failures = 0
   for (const id of ids.reverse()) {
     try {
-      const message = await gmail.getMessage(id)
-      const result = await ingestGmailMessage(db, message)
+      const message = await emailProvider.getMessage(id)
+      const result = await ingestEmailMessage(db, message)
       if (result.status !== 'DUPLICATE') processed += 1
-      if (result.complaintId && config.gmailAckEnabled)
-        await acknowledgeComplaint(db, gmail, result.complaintId, config)
+      if (result.complaintId && config.emailAckEnabled)
+        await acknowledgeComplaint(db, emailProvider, result.complaintId, config)
     } catch {
       failures += 1
     }
   }
   return { processed, failures }
 }
+
+// Dormant Gmail adapter compatibility; production uses Microsoft Graph through EmailProvider.
+export const ingestGmailMessage = ingestEmailMessage
