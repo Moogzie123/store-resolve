@@ -1430,6 +1430,30 @@ function PilotControls({
               MOCK is the safe default. Family pilot allows only configured ownership recipients.
             </small>
           </label>
+          {state.config.mode === 'SINGLE_STORE_PILOT' && (
+            <label>
+              Single-store pilot location
+              <select
+                value={state.config.pilotStoreId ?? ''}
+                onChange={(event) =>
+                  onSaveConfig({
+                    ...state.config,
+                    pilotStoreId: event.target.value || undefined,
+                  })
+                }
+              >
+                <option value="">Select an active store</option>
+                {state.stores
+                  .filter((store) => store.active)
+                  .map((store) => (
+                    <option key={store.id} value={store.id}>
+                      {store.number} · {store.name}
+                    </option>
+                  ))}
+              </select>
+              <small>Only this store's configured manager is eligible in this rollout mode.</small>
+            </label>
+          )}
           <label className="toggle-row">
             <span>
               <strong>External notifications</strong>
@@ -1540,6 +1564,20 @@ function PilotControls({
                 onSaveConfig({
                   ...state.config,
                   managerResolutionTargetHours: Number(event.target.value),
+                })
+              }
+            />
+          </label>
+          <label>
+            Escalation interval (minutes)
+            <input
+              type="number"
+              min="15"
+              value={state.config.escalationIntervalMinutes ?? 60}
+              onChange={(event) =>
+                onSaveConfig({
+                  ...state.config,
+                  escalationIntervalMinutes: Number(event.target.value),
                 })
               }
             />
