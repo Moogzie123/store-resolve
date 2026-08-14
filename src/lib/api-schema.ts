@@ -24,6 +24,13 @@ export const configSchema = z.object({
   mode: z.enum(['MOCK', 'FAMILY_PILOT', 'SINGLE_STORE_PILOT', 'FULL']),
   externalNotificationsEnabled: z.boolean(),
   pilotStoreId: z.string().optional(),
+  gmailIngestionEnabled: z.boolean().optional().default(false),
+  gmailAckEnabled: z.boolean().optional().default(false),
+  managerAckDeadlineMinutes: z.number().int().min(5).max(10_080).optional().default(30),
+  managerResolutionTargetHours: z.number().int().min(1).max(720).optional().default(24),
+  escalationIntervalMinutes: z.number().int().min(15).max(10_080).optional().default(60),
+  signalWireReconcileAfterMinutes: z.number().int().min(5).max(1_440).optional().default(10),
+  gmailSearchQuery: z.string().trim().min(1).max(500).optional().default('newer_than:30d'),
 })
 export const contactSchema = z.object({
   name: z.string().trim().min(1).max(100),
@@ -42,4 +49,27 @@ export const signalWireCallbackSchema = z.union([
 ])
 export const signalWireReconcileSchema = z.object({
   providerMessageId: z.string().uuid(),
+})
+export const storeAdminSchema = z.object({
+  number: z.string().trim().min(1).max(30),
+  name: z.string().trim().min(1).max(150),
+  address: z.string().trim().min(1).max(250),
+  city: z.string().trim().min(1).max(100),
+  state: z.string().trim().min(2).max(50),
+  postalCode: z.string().trim().min(3).max(20),
+  phone: z.union([z.literal(''), z.string().regex(/^\+[1-9]\d{7,14}$/)]),
+  active: z.boolean(),
+  managerId: z.string().trim().max(100).optional(),
+  aliases: z.array(z.string().trim().min(3).max(250)).max(25).default([]),
+})
+export const userAdminSchema = z.object({
+  name: z.string().trim().min(1).max(100).optional(),
+  email: z.string().email().max(254).optional(),
+  phone: z.union([z.literal(''), z.string().regex(/^\+[1-9]\d{7,14}$/)]).optional(),
+  role: z.enum(['OWNER', 'VIEW_ONLY', 'STORE_MANAGER', 'ADMIN']).optional(),
+  active: z.boolean().optional(),
+  smsEnabled: z.boolean().optional(),
+  complaintNotificationsEnabled: z.boolean().optional(),
+  timezone: z.string().trim().min(1).max(100).optional(),
+  storeIds: z.array(z.string().trim().min(1).max(100)).max(50).optional(),
 })

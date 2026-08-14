@@ -20,9 +20,10 @@ import {
 import { metrics } from './lib/workflow'
 import { api } from './lib/api'
 import { fixtures, initialState } from './lib/seed'
-import type { AppState, Complaint, NewComplaint, Severity } from './lib/types'
+import type { AppState, Complaint, IntegrationHealth, NewComplaint, Severity } from './lib/types'
 
-type View = 'dashboard' | 'complaints' | 'simulator' | 'detail' | 'settings'
+type View =
+  'dashboard' | 'complaints' | 'simulator' | 'detail' | 'stores' | 'team' | 'reports' | 'settings'
 const fmt = (value?: string) =>
   value
     ? new Intl.DateTimeFormat('en-US', {
@@ -53,6 +54,7 @@ export default function App() {
   const [state, setState] = useState<AppState>(initialState)
   const [loading, setLoading] = useState(true)
   const [providerReady, setProviderReady] = useState(false)
+  const [health, setHealth] = useState<IntegrationHealth>()
   const [view, setView] = useState<View>('dashboard')
   const [selectedId, setSelectedId] = useState<string>()
   const [toast, setToast] = useState<string>()
@@ -77,6 +79,7 @@ export default function App() {
       .then((result) => {
         setState(result.state)
         setProviderReady(result.providerReady)
+        setHealth(result.health)
       })
       .catch((error: Error) => show(error.message))
       .finally(() => setLoading(false))
@@ -87,7 +90,11 @@ export default function App() {
       () =>
         api
           .bootstrap()
-          .then((result) => setState(result.state))
+          .then((result) => {
+            setState(result.state)
+            setProviderReady(result.providerReady)
+            setHealth(result.health)
+          })
           .catch(() => undefined),
       10_000,
     )
@@ -134,15 +141,18 @@ export default function App() {
             </button>
           )}
           <div className="nav-label">Operations</div>
-          <button>
+          <button className={cx(view === 'stores' && 'active')} onClick={() => navigate('stores')}>
             <StoreIcon />
             Stores
           </button>
-          <button>
+          <button className={cx(view === 'team' && 'active')} onClick={() => navigate('team')}>
             <Users />
             Team
           </button>
-          <button>
+          <button
+            className={cx(view === 'reports' && 'active')}
+            onClick={() => navigate('reports')}
+          >
             <CircleGauge />
             Reports
           </button>
@@ -162,8 +172,15 @@ export default function App() {
         <div className="safety-card">
           <ShieldCheck />
           <div>
-            <strong>External messages off</strong>
-            <span>All alerts are safely simulated.</span>
+            <strong>
+              {state.config.externalNotificationsEnabled
+                ? 'External messages eligible'
+                : 'External messages off'}
+            </strong>
+            <span>
+              Gmail intake {state.config.gmailIngestionEnabled ? 'on' : 'off'} Â· replies{' '}
+              {state.config.gmailAckEnabled ? 'on' : 'off'}
+            </span>
           </div>
         </div>
         <div className="profile">
@@ -208,6 +225,39 @@ export default function App() {
               onOpen={(id) => navigate('detail', id)}
             />
           )}
+          {view === 'stores' && (
+            <StoresView
+              state={state}
+              canEdit={user.role === 'OWNER' || user.role === 'ADMIN'}
+              onSave={(store) =>
+                api
+                  .updateStore(store.id, store)
+                  .then((next) => {
+                    setState(next)
+                    show('Store configuration saved')
+                  })
+                  .catch((error: Error) => show(error.message))
+              }
+            />
+          )}
+          {view === 'team' && (
+            <TeamView
+              state={state}
+              canEdit={user.role === 'OWNER' || user.role === 'ADMIN'}
+              onSave={(id, changes) =>
+                api
+                  .updateUser(id, changes)
+                  .then((next) => {
+                    setState(next)
+                    show('User configuration saved')
+                  })
+                  .catch((error: Error) => show(error.message))
+              }
+            />
+          )}
+          {view === 'reports' && (
+            <ReportsView state={{ ...state, complaints: visibleComplaints }} />
+          )}
           {view === 'simulator' && (
             <Simulator
               state={state}
@@ -247,6 +297,7 @@ export default function App() {
               state={state}
               setState={setState}
               providerReady={providerReady}
+              health={health}
               onRun={() =>
                 api
                   .processDeadlines(72)
@@ -991,11 +1042,340 @@ function ComplaintDetail({
   )
 }
 
+function StoresView({
+  state,
+  canEdit,
+  onSave,
+}: {
+  state: AppState
+  canEdit: boolean
+  onSave: (store: AppState['stores'][number]) => void
+}) {
+  return (
+    <>
+      <PageTitle
+        eyebrow="Operations"
+        title="Stores"
+        body="Authoritative routing locations, aliases, and manager assignments."
+      />
+      <div className="settings-grid">
+        {state.stores.map((store) => (
+          <StoreEditor
+            key={store.id}
+            store={store}
+            managers={state.users.filter((candidate) => candidate.role === 'STORE_MANAGER')}
+            canEdit={canEdit}
+            onSave={onSave}
+          />
+        ))}
+      </div>
+    </>
+  )
+}
+
+function StoreEditor({
+  store,
+  managers,
+  canEdit,
+  onSave,
+}: {
+  store: AppState['stores'][number]
+  managers: AppState['users']
+  canEdit: boolean
+  onSave: (store: AppState['stores'][number]) => void
+}) {
+  const [draft, setDraft] = useState(store)
+  useEffect(() => setDraft(store), [store])
+  return (
+    <section className="panel settings-card">
+      <h2>
+        #{draft.number} Â· {draft.name}
+      </h2>
+      <p>
+        {draft.address}, {draft.city}, {draft.state} {draft.postalCode}
+      </p>
+      <label>
+        Assigned manager
+        <select
+          value={draft.managerId}
+          disabled={!canEdit}
+          onChange={(event) => setDraft({ ...draft, managerId: event.target.value })}
+        >
+          <option value="">Unassigned</option>
+          {managers.map((manager) => (
+            <option value={manager.id} key={manager.id}>
+              {manager.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        Deterministic routing aliases
+        <input
+          disabled={!canEdit}
+          value={(draft.aliases ?? []).join(', ')}
+          onChange={(event) =>
+            setDraft({
+              ...draft,
+              aliases: event.target.value
+                .split(',')
+                .map((alias) => alias.trim())
+                .filter(Boolean),
+            })
+          }
+        />
+      </label>
+      <label className="confirm-row">
+        <input
+          type="checkbox"
+          disabled={!canEdit}
+          checked={draft.active}
+          onChange={(event) => setDraft({ ...draft, active: event.target.checked })}
+        />{' '}
+        Active for routing
+      </label>
+      {canEdit && (
+        <button className="secondary" onClick={() => onSave(draft)}>
+          Save store
+        </button>
+      )}
+    </section>
+  )
+}
+
+function TeamView({
+  state,
+  canEdit,
+  onSave,
+}: {
+  state: AppState
+  canEdit: boolean
+  onSave: (
+    id: string,
+    changes: Partial<AppState['users'][number]> & { storeIds?: string[] },
+  ) => void
+}) {
+  return (
+    <>
+      <PageTitle
+        eyebrow="Administration"
+        title="Users and authority"
+        body="Access identities, roles, store assignments, and notification eligibility."
+      />
+      <div className="settings-grid">
+        {state.users.map((member) => (
+          <TeamEditor
+            key={member.id}
+            member={member}
+            stores={state.stores}
+            canEdit={canEdit && member.recipientKind !== 'PILOT_ADMIN'}
+            onSave={onSave}
+          />
+        ))}
+      </div>
+    </>
+  )
+}
+
+function TeamEditor({
+  member,
+  stores,
+  canEdit,
+  onSave,
+}: {
+  member: AppState['users'][number]
+  stores: AppState['stores']
+  canEdit: boolean
+  onSave: (
+    id: string,
+    changes: Partial<AppState['users'][number]> & { storeIds?: string[] },
+  ) => void
+}) {
+  const assigned = stores.filter((store) => store.managerId === member.id).map((store) => store.id)
+  const [role, setRole] = useState(member.role)
+  const [active, setActive] = useState(member.active)
+  const [smsEnabled, setSmsEnabled] = useState(member.smsEnabled)
+  const [complaintEligible, setComplaintEligible] = useState(
+    Boolean(member.complaintNotificationsEnabled),
+  )
+  const [storeIds, setStoreIds] = useState(assigned)
+  const [accessEmail, setAccessEmail] = useState('')
+  return (
+    <section className="panel settings-card">
+      <h2>{member.name}</h2>
+      <p>
+        {member.email} Â· {member.recipientKind}
+      </p>
+      <label>
+        Role
+        <select
+          value={role}
+          disabled={!canEdit}
+          onChange={(event) => setRole(event.target.value as typeof role)}
+        >
+          {['OWNER', 'ADMIN', 'VIEW_ONLY', 'STORE_MANAGER'].map((candidate) => (
+            <option key={candidate}>{candidate}</option>
+          ))}
+        </select>
+      </label>
+      {role === 'STORE_MANAGER' && (
+        <label>
+          Assigned stores
+          <select
+            multiple
+            value={storeIds}
+            disabled={!canEdit}
+            onChange={(event) =>
+              setStoreIds(Array.from(event.target.selectedOptions).map((option) => option.value))
+            }
+          >
+            {stores.map((store) => (
+              <option value={store.id} key={store.id}>
+                #{store.number} {store.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {canEdit && (
+        <label>
+          Replace Access email (leave blank to preserve)
+          <input
+            type="email"
+            value={accessEmail}
+            onChange={(event) => setAccessEmail(event.target.value)}
+          />
+        </label>
+      )}
+      <label className="confirm-row">
+        <input
+          type="checkbox"
+          checked={active}
+          disabled={!canEdit}
+          onChange={(event) => setActive(event.target.checked)}
+        />{' '}
+        Active account
+      </label>
+      <label className="confirm-row">
+        <input
+          type="checkbox"
+          checked={smsEnabled}
+          disabled={!canEdit}
+          onChange={(event) => setSmsEnabled(event.target.checked)}
+        />{' '}
+        SMS enabled
+      </label>
+      <label className="confirm-row">
+        <input
+          type="checkbox"
+          checked={complaintEligible}
+          disabled={!canEdit}
+          onChange={(event) => setComplaintEligible(event.target.checked)}
+        />{' '}
+        Ownership complaint notification eligibility
+      </label>
+      {canEdit && (
+        <button
+          className="secondary"
+          onClick={() =>
+            onSave(member.id, {
+              role,
+              active,
+              smsEnabled,
+              complaintNotificationsEnabled: complaintEligible,
+              storeIds: role === 'STORE_MANAGER' ? storeIds : [],
+              ...(accessEmail ? { email: accessEmail } : {}),
+            })
+          }
+        >
+          Save user
+        </button>
+      )}
+    </section>
+  )
+}
+
+function ReportsView({ state }: { state: AppState }) {
+  const [storeId, setStoreId] = useState('')
+  const [status, setStatus] = useState('')
+  const [category, setCategory] = useState('')
+  const [severity, setSeverity] = useState('')
+  const filtered = state.complaints.filter(
+    (complaint) =>
+      (!storeId || complaint.storeId === storeId) &&
+      (!status || complaint.status === status) &&
+      (!category || complaint.category === category) &&
+      (!severity || complaint.severity === severity),
+  )
+  const report = metrics({ ...state, complaints: filtered })
+  const categories = Array.from(new Set(state.complaints.map((complaint) => complaint.category)))
+  return (
+    <>
+      <PageTitle
+        eyebrow="Reporting"
+        title="Complaint performance"
+        body="Metrics calculated from authoritative D1 complaint records."
+      />
+      <section className="panel settings-card">
+        <div className="filters">
+          <select value={storeId} onChange={(event) => setStoreId(event.target.value)}>
+            <option value="">All stores</option>
+            {state.stores.map((store) => (
+              <option value={store.id} key={store.id}>
+                #{store.number} {store.name}
+              </option>
+            ))}
+          </select>
+          <select value={status} onChange={(event) => setStatus(event.target.value)}>
+            <option value="">All statuses</option>
+            {Array.from(new Set(state.complaints.map((complaint) => complaint.status))).map(
+              (candidate) => (
+                <option key={candidate}>{candidate}</option>
+              ),
+            )}
+          </select>
+          <select value={category} onChange={(event) => setCategory(event.target.value)}>
+            <option value="">All categories</option>
+            {categories.map((candidate) => (
+              <option key={candidate}>{candidate}</option>
+            ))}
+          </select>
+          <select value={severity} onChange={(event) => setSeverity(event.target.value)}>
+            <option value="">All severities</option>
+            {['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'].map((candidate) => (
+              <option key={candidate}>{candidate}</option>
+            ))}
+          </select>
+        </div>
+      </section>
+      <div className="metrics-grid">
+        {[
+          ['Complaints', report.total],
+          ['Open', report.open],
+          ['Closed', report.closed],
+          ['Overdue', report.overdue],
+          ['Average acknowledgment', `${report.avgAckMinutes} min`],
+          ['Average resolution', `${report.avgResolutionHours} hr`],
+        ].map(([label, value]) => (
+          <section className="metric-card" key={label}>
+            <span>{label}</span>
+            <strong>{value}</strong>
+          </section>
+        ))}
+      </div>
+      <section className="panel">
+        <ComplaintTable state={{ ...state, complaints: filtered }} onOpen={() => undefined} />
+      </section>
+    </>
+  )
+}
+
 function PilotControls({
   state,
   setState,
   onRun,
   providerReady,
+  health,
   onSaveConfig,
   onSendTest,
   onReconcile,
@@ -1004,6 +1384,7 @@ function PilotControls({
   setState: (s: AppState) => void
   onRun: () => void
   providerReady: boolean
+  health?: IntegrationHealth
   onSaveConfig: (config: AppState['config']) => void
   onSendTest: (id: 'father' | 'uncle' | 'grandfather' | 'pilot-admin') => void
   onReconcile: (providerMessageId: string) => void
@@ -1077,6 +1458,106 @@ function PilotControls({
               Every attempted message is still independently recorded.
             </span>
           </div>
+        </section>
+        <section className="panel settings-card">
+          <h2>Gmail operations</h2>
+          <p>
+            Intake and outbound acknowledgment are independent server-enforced controls. Both remain
+            off until the mailbox OAuth secrets are configured and a pilot is approved.
+          </p>
+          <div className="readiness-list">
+            <span>
+              Gmail provider <strong>{health?.gmailReady ? 'READY' : 'NOT READY'}</strong>
+            </span>
+            <span>
+              Last background run <strong>{fmt(health?.lastBackgroundRunAt)}</strong>
+            </span>
+          </div>
+          <label className="toggle-row">
+            <span>
+              <strong>Gmail ingestion</strong>
+              <small>Reads and persists matching messages; does not send a reply.</small>
+            </span>
+            <button
+              className={cx('toggle', state.config.gmailIngestionEnabled && 'on')}
+              onClick={() =>
+                onSaveConfig({
+                  ...state.config,
+                  gmailIngestionEnabled: !state.config.gmailIngestionEnabled,
+                })
+              }
+            >
+              <i />
+            </button>
+          </label>
+          <label className="toggle-row">
+            <span>
+              <strong>Automatic acknowledgment</strong>
+              <small>Replies once in the source Gmail thread when enabled.</small>
+            </span>
+            <button
+              className={cx('toggle', state.config.gmailAckEnabled && 'on')}
+              onClick={() =>
+                onSaveConfig({ ...state.config, gmailAckEnabled: !state.config.gmailAckEnabled })
+              }
+            >
+              <i />
+            </button>
+          </label>
+          <label>
+            Gmail polling query
+            <input
+              value={state.config.gmailSearchQuery ?? 'newer_than:30d'}
+              onChange={(event) =>
+                onSaveConfig({ ...state.config, gmailSearchQuery: event.target.value })
+              }
+            />
+          </label>
+        </section>
+        <section className="panel settings-card">
+          <h2>SLA and background processing</h2>
+          <label>
+            Manager acknowledgment deadline (minutes)
+            <input
+              type="number"
+              min="5"
+              value={state.config.managerAckDeadlineMinutes ?? 30}
+              onChange={(event) =>
+                onSaveConfig({
+                  ...state.config,
+                  managerAckDeadlineMinutes: Number(event.target.value),
+                })
+              }
+            />
+          </label>
+          <label>
+            Resolution target (hours)
+            <input
+              type="number"
+              min="1"
+              value={state.config.managerResolutionTargetHours ?? 24}
+              onChange={(event) =>
+                onSaveConfig({
+                  ...state.config,
+                  managerResolutionTargetHours: Number(event.target.value),
+                })
+              }
+            />
+          </label>
+          <label>
+            SignalWire reconciliation threshold (minutes)
+            <input
+              type="number"
+              min="5"
+              value={state.config.signalWireReconcileAfterMinutes ?? 10}
+              onChange={(event) =>
+                onSaveConfig({
+                  ...state.config,
+                  signalWireReconcileAfterMinutes: Number(event.target.value),
+                })
+              }
+            />
+          </label>
         </section>
         <section className="panel settings-card">
           <h2>Ownership recipients</h2>

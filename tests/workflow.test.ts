@@ -150,6 +150,7 @@ describe('manager workflow and authorization', () => {
   it('allows an owner to close only a submitted resolution and records time', () => {
     const r = create()
     state = updateComplaint(r.state, r.complaint.id, 'ACKNOWLEDGE', 'manager-1', {}, received)
+    state = updateComplaint(state, r.complaint.id, 'START_INVESTIGATION', 'manager-1', {}, received)
     state = updateComplaint(state, r.complaint.id, 'SUBMIT_RESOLUTION', 'manager-1', {}, received)
     state = updateComplaint(
       state,
@@ -192,6 +193,14 @@ describe('deadlines and reporting', () => {
       'manager-1',
       {},
       '2026-08-11T12:10:00Z',
+    )
+    state = updateComplaint(
+      state,
+      r.complaint.id,
+      'START_INVESTIGATION',
+      'manager-1',
+      {},
+      '2026-08-11T12:15:00Z',
     )
     state = updateComplaint(
       state,

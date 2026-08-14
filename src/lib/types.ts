@@ -2,7 +2,13 @@ export type Role = 'OWNER' | 'VIEW_ONLY' | 'STORE_MANAGER' | 'ADMIN'
 export type RecipientKind = 'STANDARD' | 'PILOT_ADMIN'
 export type Severity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
 export type Status =
-  'NEW' | 'MANAGER_NOTIFIED' | 'ACKNOWLEDGED' | 'INVESTIGATING' | 'RESOLUTION_SUBMITTED' | 'CLOSED'
+  | 'NEW'
+  | 'ROUTING_REVIEW'
+  | 'MANAGER_NOTIFIED'
+  | 'ACKNOWLEDGED'
+  | 'INVESTIGATING'
+  | 'RESOLUTION_SUBMITTED'
+  | 'CLOSED'
 export type NotificationStatus =
   'PENDING' | 'SENT' | 'DELIVERED' | 'FAILED' | 'UNDELIVERED' | 'SUPPRESSED'
 export type RolloutMode = 'MOCK' | 'FAMILY_PILOT' | 'SINGLE_STORE_PILOT' | 'FULL'
@@ -33,6 +39,7 @@ export interface User {
   recipientKind: RecipientKind
   active: boolean
   smsEnabled: boolean
+  complaintNotificationsEnabled?: boolean
   timezone: string
 }
 export interface Store {
@@ -46,6 +53,7 @@ export interface Store {
   phone: string
   active: boolean
   managerId: string
+  aliases?: string[]
 }
 export interface ComplaintEvent {
   id: string
@@ -63,7 +71,7 @@ export interface Notification {
   channel: 'SMS' | 'IN_APP'
   message: string
   status: NotificationStatus
-  provider: 'MOCK' | 'TWILIO' | 'SIGNALWIRE'
+  provider: 'MOCK' | 'SIGNALWIRE'
   providerMessageId?: string
   createdAt: string
   sentAt?: string
@@ -78,6 +86,14 @@ export interface Complaint {
   assignedManagerId?: string
   subject: string
   complaintText: string
+  source?: 'MANUAL' | 'GMAIL'
+  gmailMessageId?: string
+  gmailThreadId?: string
+  sourceSender?: string
+  customerName?: string
+  customerEmail?: string
+  customerPhone?: string
+  occurrenceAt?: string
   category: string
   severity: Severity
   status: Status
@@ -86,7 +102,8 @@ export interface Complaint {
   routingReason: string
   routingConfidence: 'HIGH' | 'REVIEW'
   receivedAt: string
-  dunkinAcknowledgedAt: string
+  dunkinAcknowledgedAt?: string
+  acknowledgementStatus?: 'DISABLED' | 'PENDING' | 'IN_FLIGHT' | 'SENT' | 'FAILED'
   acknowledgementBody: string
   managerNotifiedAt?: string
   managerAcknowledgedAt?: string
@@ -94,10 +111,15 @@ export interface Complaint {
   resolutionSubmittedAt?: string
   closedAt?: string
   closedBy?: string
+  ownerReviewedAt?: string
+  reopenedAt?: string
+  reopenReason?: string
+  ownerNotes?: string
   ackDeadline: string
   resolutionDeadline?: string
   managerFindings?: string
   customerContacted?: boolean
+  customerContactedAt?: string
   customerContactOutcome?: string
   correctiveAction?: string
   resolutionNotes?: string
@@ -109,6 +131,25 @@ export interface AppConfig {
   mode: RolloutMode
   externalNotificationsEnabled: boolean
   pilotStoreId?: string
+  gmailIngestionEnabled?: boolean
+  gmailAckEnabled?: boolean
+  managerAckDeadlineMinutes?: number
+  managerResolutionTargetHours?: number
+  escalationIntervalMinutes?: number
+  signalWireReconcileAfterMinutes?: number
+  gmailSearchQuery?: string
+}
+
+export interface IntegrationHealth {
+  gmailReady: boolean
+  gmailIngestionEnabled: boolean
+  gmailAckEnabled: boolean
+  lastGmailSyncAt?: string
+  signalWireReady: boolean
+  externalNotificationsEnabled: boolean
+  rolloutMode: RolloutMode
+  lastBackgroundRunAt?: string
+  recentFailures: Array<{ integration: string; code: string; occurredAt: string }>
 }
 export interface AppState {
   users: User[]
@@ -126,6 +167,7 @@ export interface BootstrapResponse {
   state: AppState
   currentUser: SessionUser
   providerReady: boolean
+  health?: IntegrationHealth
 }
 export interface NewComplaint {
   externalCaseId: string

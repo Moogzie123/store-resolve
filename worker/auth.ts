@@ -32,6 +32,7 @@ export async function authenticate(
     recipientKind: (row.recipient_kind ?? 'STANDARD') as User['recipientKind'],
     active: Boolean(row.active),
     smsEnabled: Boolean(row.sms_enabled),
+    complaintNotificationsEnabled: Boolean(row.complaint_notifications_enabled),
     timezone: String(row.timezone),
   }
 }

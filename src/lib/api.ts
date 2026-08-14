@@ -1,6 +1,13 @@
 import { z } from 'zod'
-import type { AppConfig, AppState, BootstrapResponse, NewComplaint, User } from './types'
-import { actionSchema, complaintInputSchema, configSchema, contactSchema } from './api-schema'
+import type { AppConfig, AppState, BootstrapResponse, NewComplaint, Store, User } from './types'
+import {
+  actionSchema,
+  complaintInputSchema,
+  configSchema,
+  contactSchema,
+  storeAdminSchema,
+  userAdminSchema,
+} from './api-schema'
 
 const errorSchema = z.object({ error: z.string() })
 async function request<T>(path: string, schema: z.ZodType<T>, init?: RequestInit): Promise<T> {
@@ -63,5 +70,28 @@ export const api = {
     request('/admin/signalwire/reconcile', reconciliationSchema, {
       method: 'POST',
       body: JSON.stringify({ providerMessageId }),
+    }),
+  updateStore: (id: string, store: Store) =>
+    request(`/admin/stores/${encodeURIComponent(id)}`, stateSchema, {
+      method: 'PUT',
+      body: JSON.stringify(
+        storeAdminSchema.parse({
+          number: store.number,
+          name: store.name,
+          address: store.address,
+          city: store.city,
+          state: store.state,
+          postalCode: store.postalCode,
+          phone: store.phone,
+          active: store.active,
+          managerId: store.managerId || undefined,
+          aliases: store.aliases ?? [],
+        }),
+      ),
+    }),
+  updateUser: (id: string, changes: Partial<User> & { storeIds?: string[] }) =>
+    request(`/admin/users/${encodeURIComponent(id)}`, stateSchema, {
+      method: 'PUT',
+      body: JSON.stringify(userAdminSchema.parse(changes)),
     }),
 }

@@ -269,10 +269,3 @@ export class SignalWireSmsProvider implements NotificationProvider {
       )
   }
 }
-
-export interface ComplaintEmailProvider {
-  receive(): Promise<unknown[]>
-  getThread(threadId: string): Promise<unknown>
-  sendAcknowledgment(threadId: string, body: string): Promise<void>
-  sendFinalReply(threadId: string, body: string): Promise<void>
-}

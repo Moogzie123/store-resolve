@@ -1,6 +1,6 @@
 # StoreResolve
 
-Persistent complaint operations for a seven-location Dunkin franchise group. The React client now uses an authenticated Hono Worker API; Cloudflare D1 is the authoritative store for complaints, events, notifications, contacts, and rollout controls.
+Production complaint operations for a multi-location Dunkin franchise group. React is served by an authenticated Hono Worker; Cloudflare D1 is authoritative for Gmail ingestion, complaint lifecycle, routing, audits, notifications, callbacks, escalation, administration, and reporting.
 
 ## Local development
 
@@ -27,6 +27,15 @@ pnpm test:e2e
 
 The Playwright suite exercises the Worker+D1 path, refresh persistence, separate authenticated sessions, authorization, and the test-message confirmation guard. No live SMS is sent by tests. Default production state is `FAMILY_PILOT` with external notifications disabled.
 
-Production SMS uses the server-side SignalWire adapter. Provider acceptance is recorded as `SENT`; an authenticated provider lookup validates callbacks before final delivery status changes. See `docs/INTEGRATIONS.md` for the safe setup and one-recipient test runbook.
+Production SMS uses the server-side SignalWire adapter. Gmail uses an isolated OAuth provider with deterministic ingestion and exactly-once acknowledgment state. A five-minute Cron Trigger runs ingestion (when enabled), SLA escalation, and stale SignalWire reconciliation. All external-I/O switches default off.
+
+Operator documentation:
+
+- [Architecture](docs/ARCHITECTURE.md)
+- [Deployment](docs/DEPLOYMENT.md)
+- [Integrations](docs/INTEGRATIONS.md)
+- [Operations](docs/OPERATIONS.md)
+- [Security](docs/SECURITY.md)
+- [Pilot runbook](docs/PILOT_RUNBOOK.md)
 
 No real customer information, phone numbers, email addresses, or credentials belong in this repository.

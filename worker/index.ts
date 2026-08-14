@@ -8,7 +8,9 @@ import {
   contactSchema,
   signalWireCallbackSchema,
   signalWireReconcileSchema,
+  storeAdminSchema,
   testNotificationSchema,
+  userAdminSchema,
 } from '../src/lib/api-schema'
 import { createComplaint, processDeadlines, updateComplaint } from '../src/lib/workflow'
 import type { AppState, User } from '../src/lib/types'
@@ -16,16 +18,21 @@ import { authenticate, canAdmin, canViewComplaint, maskEmail, maskPhone } from '
 import { loadState, persistState, type D1Database } from './d1'
 import { SignalWireSmsProvider } from './providers'
 import { applySignalWireCallback, reconcileSignalWireMessage } from './callbacks'
+import { GmailProvider } from './gmail'
+import { runScheduledOperations } from './operations'
+import { buildReport } from './reporting'
 
-type Bindings = {
-  DB: D1Database
-  ASSETS?: { fetch(request: Request): Promise<Response> }
+type Bindings = Env & {
   DEV_AUTH_USER_ID?: string
   SIGNALWIRE_PROJECT_ID?: string
   SIGNALWIRE_API_TOKEN?: string
   SIGNALWIRE_SPACE_URL?: string
   SIGNALWIRE_PHONE_NUMBER?: string
   PUBLIC_BASE_URL?: string
+  GMAIL_CLIENT_ID?: string
+  GMAIL_CLIENT_SECRET?: string
+  GMAIL_REFRESH_TOKEN?: string
+  GMAIL_MAILBOX_ADDRESS?: string
 }
 type Variables = { user: User }
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -41,6 +48,31 @@ const provider = (env: Bindings) =>
     from: env.SIGNALWIRE_PHONE_NUMBER,
     publicBaseUrl: env.PUBLIC_BASE_URL,
   })
+const gmailProvider = (env: Bindings) =>
+  new GmailProvider({
+    clientId: env.GMAIL_CLIENT_ID,
+    clientSecret: env.GMAIL_CLIENT_SECRET,
+    refreshToken: env.GMAIL_REFRESH_TOKEN,
+    mailboxAddress: env.GMAIL_MAILBOX_ADDRESS,
+  })
+const auditAdminChange = async (
+  db: D1Database,
+  eventType: string,
+  entityId: string,
+  actorId: string,
+) =>
+  db
+    .prepare(
+      `INSERT INTO integration_events(id,integration,event_type,entity_id,outcome,detail_code,metadata,created_at) VALUES(?,'ADMIN',?,?,'SUCCESS',NULL,?,?)`,
+    )
+    .bind(
+      crypto.randomUUID(),
+      eventType,
+      entityId,
+      JSON.stringify({ actorId }),
+      new Date().toISOString(),
+    )
+    .run()
 const publicState = (state: AppState, user: User): AppState => ({
   ...state,
   activeUserId: user.id,
@@ -104,6 +136,26 @@ app.get('/api/bootstrap', async (c) => {
     } catch {
       providerReady = false
     }
+  const gmail = gmailProvider(c.env)
+  let gmailReady = false
+  if (gmail.ready)
+    try {
+      await gmail.verifyConnection()
+      gmailReady = true
+    } catch {
+      gmailReady = false
+    }
+  const [lastGmailSync, lastBackgroundRun, failures] = await Promise.all([
+    c.env.DB.prepare(
+      `SELECT completed_at FROM background_job_runs WHERE job_name='OPERATIONS' AND outcome IN ('SUCCESS','PARTIAL') ORDER BY started_at DESC LIMIT 1`,
+    ).first<{ completed_at: string }>(),
+    c.env.DB.prepare(
+      `SELECT completed_at FROM background_job_runs ORDER BY started_at DESC LIMIT 1`,
+    ).first<{ completed_at: string }>(),
+    c.env.DB.prepare(
+      `SELECT integration,detail_code,created_at FROM integration_events WHERE outcome='FAILED' ORDER BY created_at DESC LIMIT 10`,
+    ).all<{ integration: string; detail_code: string; created_at: string }>(),
+  ])
   return c.json({
     state: publicState(state, user),
     currentUser: {
@@ -114,6 +166,21 @@ app.get('/api/bootstrap', async (c) => {
       maskedEmail: maskEmail(user.email),
     },
     providerReady,
+    health: {
+      gmailReady,
+      gmailIngestionEnabled: Boolean(state.config.gmailIngestionEnabled),
+      gmailAckEnabled: Boolean(state.config.gmailAckEnabled),
+      lastGmailSyncAt: lastGmailSync?.completed_at,
+      signalWireReady: providerReady,
+      externalNotificationsEnabled: state.config.externalNotificationsEnabled,
+      rolloutMode: state.config.mode,
+      lastBackgroundRunAt: lastBackgroundRun?.completed_at,
+      recentFailures: failures.results.map((row) => ({
+        integration: row.integration,
+        code: row.detail_code,
+        occurredAt: row.created_at,
+      })),
+    },
   })
 })
 app.post(
@@ -195,6 +262,115 @@ app.put('/api/admin/config', zValidator('json', configSchema), async (c) => {
   const state = await loadState(c.env.DB)
   state.config = c.req.valid('json')
   await persistState(c.env.DB, state)
+  await auditAdminChange(c.env.DB, 'SETTINGS_CHANGED', 'operational-settings', user.id)
+  return c.json(publicState(await loadState(c.env.DB), user))
+})
+
+app.get('/api/admin/reporting', async (c) => {
+  const user = c.get('user')
+  if (!canAdmin(user)) return c.json(jsonError('Owner access required'), 403)
+  const state = await loadState(c.env.DB)
+  return c.json(
+    buildReport(state, {
+      from: c.req.query('from'),
+      to: c.req.query('to'),
+      storeId: c.req.query('storeId'),
+      status: c.req.query('status'),
+      category: c.req.query('category'),
+      severity: c.req.query('severity'),
+    }),
+  )
+})
+
+app.put('/api/admin/stores/:id', zValidator('json', storeAdminSchema), async (c) => {
+  const user = c.get('user')
+  if (!canAdmin(user)) return c.json(jsonError('Owner access required'), 403)
+  const id = c.req.param('id').trim()
+  if (!id || id.length > 100) return c.json(jsonError('Invalid store identifier'), 400)
+  const input = c.req.valid('json')
+  const now = new Date().toISOString()
+  const manager = input.managerId
+    ? await c.env.DB.prepare(
+        `SELECT id FROM users WHERE id=? AND role='STORE_MANAGER' AND active=1`,
+      )
+        .bind(input.managerId)
+        .first<{ id: string }>()
+    : null
+  if (input.managerId && !manager) return c.json(jsonError('Active manager required'), 400)
+  await c.env.DB.prepare(
+    `INSERT INTO stores(id,organization_id,dunkin_store_number,name,address,city,state,postal_code,phone,active,manager_id,created_at,updated_at) VALUES(?,'org-1',?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET dunkin_store_number=excluded.dunkin_store_number,name=excluded.name,address=excluded.address,city=excluded.city,state=excluded.state,postal_code=excluded.postal_code,phone=excluded.phone,active=excluded.active,manager_id=excluded.manager_id,updated_at=excluded.updated_at`,
+  )
+    .bind(
+      id,
+      input.number,
+      input.name,
+      input.address,
+      input.city,
+      input.state,
+      input.postalCode,
+      input.phone,
+      input.active ? 1 : 0,
+      input.managerId ?? null,
+      now,
+      now,
+    )
+    .run()
+  await c.env.DB.prepare('DELETE FROM store_aliases WHERE store_id=?').bind(id).run()
+  if (input.aliases.length)
+    await c.env.DB.batch(
+      input.aliases.map((alias) =>
+        c.env.DB.prepare(
+          `INSERT INTO store_aliases(id,store_id,alias_normalized,created_at) VALUES(?,?,?,?)`,
+        ).bind(crypto.randomUUID(), id, alias.toLowerCase().replace(/[^a-z0-9]/g, ''), now),
+      ),
+    )
+  await auditAdminChange(c.env.DB, 'STORE_CHANGED', id, user.id)
+  return c.json(publicState(await loadState(c.env.DB), user))
+})
+
+app.put('/api/admin/users/:id', zValidator('json', userAdminSchema), async (c) => {
+  const user = c.get('user')
+  if (!canAdmin(user)) return c.json(jsonError('Owner access required'), 403)
+  const id = c.req.param('id').trim()
+  if (!id || id.length > 100 || id === pilotAdminId)
+    return c.json(jsonError('Invalid managed user identifier'), 400)
+  const input = c.req.valid('json')
+  const now = new Date().toISOString()
+  const existing = await c.env.DB.prepare('SELECT * FROM users WHERE id=?')
+    .bind(id)
+    .first<Record<string, unknown>>()
+  if (!existing) return c.json(jsonError('User not found'), 404)
+  await c.env.DB.prepare(
+    `INSERT INTO users(id,organization_id,name,email,phone,role,active,sms_enabled,timezone,created_at,updated_at,recipient_kind,complaint_notifications_enabled) VALUES(?,'org-1',?,?,?,?,?,?,?, ?,?,'STANDARD',?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,email=excluded.email,phone=excluded.phone,role=excluded.role,active=excluded.active,sms_enabled=excluded.sms_enabled,timezone=excluded.timezone,complaint_notifications_enabled=excluded.complaint_notifications_enabled,updated_at=excluded.updated_at`,
+  )
+    .bind(
+      id,
+      input.name ?? String(existing.name),
+      input.email ?? String(existing.email),
+      input.phone ?? String(existing.phone),
+      input.role ?? String(existing.role),
+      (input.active ?? Boolean(existing.active)) ? 1 : 0,
+      (input.smsEnabled ?? Boolean(existing.sms_enabled)) ? 1 : 0,
+      input.timezone ?? String(existing.timezone),
+      now,
+      now,
+      (input.complaintNotificationsEnabled ?? Boolean(existing.complaint_notifications_enabled))
+        ? 1
+        : 0,
+    )
+    .run()
+  if (input.storeIds) {
+    await c.env.DB.prepare('DELETE FROM user_store_assignments WHERE user_id=?').bind(id).run()
+  }
+  if ((input.role ?? existing.role) === 'STORE_MANAGER' && input.storeIds?.length)
+    await c.env.DB.batch(
+      input.storeIds.map((storeId) =>
+        c.env.DB.prepare(
+          `INSERT INTO user_store_assignments(user_id,store_id,created_at) SELECT ?,id,? FROM stores WHERE id=?`,
+        ).bind(id, now, storeId),
+      ),
+    )
+  await auditAdminChange(c.env.DB, 'USER_CHANGED', id, user.id)
   return c.json(publicState(await loadState(c.env.DB), user))
 })
 app.put('/api/admin/contacts/:id', zValidator('json', contactSchema), async (c) => {
@@ -296,7 +472,7 @@ app.post('/api/admin/test-notifications', zValidator('json', testNotificationSch
   return c.json(publicState(await loadState(c.env.DB), user))
 })
 
-async function dispatchEligible(env: Bindings, state: AppState) {
+export async function dispatchEligible(env: Bindings, state: AppState) {
   for (const complaint of state.complaints)
     for (const n of complaint.notifications) {
       if (n.status !== 'PENDING' || n.providerMessageId) continue
@@ -305,8 +481,14 @@ async function dispatchEligible(env: Bindings, state: AppState) {
       let reason: string | undefined
       if (!state.config.externalNotificationsEnabled) reason = 'EXTERNAL_NOTIFICATIONS_DISABLED'
       else if (recipient.recipientKind === 'PILOT_ADMIN') reason = 'TEST_RECIPIENT_ONLY'
-      else if (state.config.mode === 'FAMILY_PILOT' && !ownerIds.includes(recipient.id))
+      else if (state.config.mode === 'FAMILY_PILOT' && !recipient.complaintNotificationsEnabled)
         reason = 'FAMILY_PILOT'
+      else if (
+        state.config.mode === 'SINGLE_STORE_PILOT' &&
+        recipient.role === 'STORE_MANAGER' &&
+        complaint.storeId !== state.config.pilotStoreId
+      )
+        reason = 'SINGLE_STORE_PILOT'
       else if (!recipient.smsEnabled || !recipient.active || !recipient.phone)
         reason = 'RECIPIENT_NOT_READY'
       else if (!provider(env).ready) reason = 'SIGNALWIRE_NOT_READY'
@@ -333,4 +515,12 @@ app.all('/api/*', (c) => c.json(jsonError('API route not found'), 404))
 app.get('*', (c) =>
   c.env.ASSETS ? c.env.ASSETS.fetch(c.req.raw) : c.text('StoreResolve worker is healthy'),
 )
-export default app
+export default {
+  fetch: app.fetch,
+  async scheduled(
+    _controller: { cron: string; scheduledTime: number },
+    env: Bindings,
+  ): Promise<void> {
+    await runScheduledOperations(env, gmailProvider(env), provider(env), dispatchEligible)
+  },
+}

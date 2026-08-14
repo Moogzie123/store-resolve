@@ -10,6 +10,7 @@ export const users: User[] = [
     recipientKind: 'STANDARD',
     active: true,
     smsEnabled: false,
+    complaintNotificationsEnabled: true,
     timezone: 'America/New_York',
   },
   {
@@ -21,6 +22,7 @@ export const users: User[] = [
     recipientKind: 'STANDARD',
     active: true,
     smsEnabled: false,
+    complaintNotificationsEnabled: true,
     timezone: 'America/New_York',
   },
   {
@@ -32,6 +34,7 @@ export const users: User[] = [
     recipientKind: 'STANDARD',
     active: true,
     smsEnabled: false,
+    complaintNotificationsEnabled: true,
     timezone: 'America/New_York',
   },
   {

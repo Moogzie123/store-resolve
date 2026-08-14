@@ -14,15 +14,21 @@ export interface D1PreparedStatement {
 export interface D1Database {
   prepare(query: string): D1PreparedStatement
   batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]>
-  exec(query: string): Promise<D1Result>
+  exec(query: string): Promise<unknown>
 }
 
 const bool = (value: unknown) => Boolean(value)
 export async function loadState(db: D1Database): Promise<AppState> {
-  const [userRows, storeRows, complaintRows, eventRows, notificationRows, settingRows] =
+  const [userRows, storeRows, aliasRows, complaintRows, eventRows, notificationRows, settingRows] =
     await Promise.all([
       db.prepare('SELECT * FROM users ORDER BY id').all<Record<string, unknown>>(),
       db.prepare('SELECT * FROM stores ORDER BY id').all<Record<string, unknown>>(),
+      db
+        .prepare('SELECT store_id,alias_normalized FROM store_aliases ORDER BY alias_normalized')
+        .all<{
+          store_id: string
+          alias_normalized: string
+        }>(),
       db
         .prepare('SELECT * FROM complaints ORDER BY received_at DESC')
         .all<Record<string, unknown>>(),
@@ -41,8 +47,15 @@ export async function loadState(db: D1Database): Promise<AppState> {
     recipientKind: (r.recipient_kind ?? 'STANDARD') as User['recipientKind'],
     active: bool(r.active),
     smsEnabled: bool(r.sms_enabled),
+    complaintNotificationsEnabled: bool(r.complaint_notifications_enabled),
     timezone: String(r.timezone),
   }))
+  const aliasesByStore = new Map<string, string[]>()
+  for (const row of aliasRows.results) {
+    const aliases = aliasesByStore.get(row.store_id) ?? []
+    aliases.push(row.alias_normalized)
+    aliasesByStore.set(row.store_id, aliases)
+  }
   const stores: Store[] = storeRows.results.map((r) => ({
     id: String(r.id),
     number: String(r.dunkin_store_number),
@@ -54,6 +67,7 @@ export async function loadState(db: D1Database): Promise<AppState> {
     phone: String(r.phone),
     active: bool(r.active),
     managerId: String(r.manager_id),
+    aliases: aliasesByStore.get(String(r.id)) ?? [],
   }))
   const eventMap = new Map<string, Complaint['events']>()
   for (const r of eventRows.results) {
@@ -97,6 +111,14 @@ export async function loadState(db: D1Database): Promise<AppState> {
     assignedManagerId: r.assigned_manager_id ? String(r.assigned_manager_id) : undefined,
     subject: String(r.subject),
     complaintText: String(r.complaint_text),
+    source: (r.source ?? 'MANUAL') as Complaint['source'],
+    gmailMessageId: r.gmail_message_id ? String(r.gmail_message_id) : undefined,
+    gmailThreadId: r.gmail_thread_id ? String(r.gmail_thread_id) : undefined,
+    sourceSender: r.source_sender ? String(r.source_sender) : undefined,
+    customerName: r.customer_name ? String(r.customer_name) : undefined,
+    customerEmail: r.customer_email ? String(r.customer_email) : undefined,
+    customerPhone: r.customer_phone ? String(r.customer_phone) : undefined,
+    occurrenceAt: r.occurrence_at ? String(r.occurrence_at) : undefined,
     category: String(r.category),
     severity: r.severity as Complaint['severity'],
     status: r.status as Complaint['status'],
@@ -105,8 +127,10 @@ export async function loadState(db: D1Database): Promise<AppState> {
     routingReason: String(r.routing_reason),
     routingConfidence: r.routing_confidence as Complaint['routingConfidence'],
     receivedAt: String(r.received_at),
-    dunkinAcknowledgedAt: String(r.dunkin_acknowledged_at),
-    acknowledgementBody: String(r.acknowledgment_body),
+    dunkinAcknowledgedAt: r.dunkin_acknowledged_at ? String(r.dunkin_acknowledged_at) : undefined,
+    acknowledgementStatus: (r.acknowledgement_status ??
+      'DISABLED') as Complaint['acknowledgementStatus'],
+    acknowledgementBody: r.acknowledgment_body ? String(r.acknowledgment_body) : '',
     managerNotifiedAt: r.manager_notified_at ? String(r.manager_notified_at) : undefined,
     managerAcknowledgedAt: r.manager_acknowledged_at
       ? String(r.manager_acknowledged_at)
@@ -119,10 +143,15 @@ export async function loadState(db: D1Database): Promise<AppState> {
       : undefined,
     closedAt: r.closed_at ? String(r.closed_at) : undefined,
     closedBy: r.closed_by ? String(r.closed_by) : undefined,
+    ownerReviewedAt: r.owner_reviewed_at ? String(r.owner_reviewed_at) : undefined,
+    reopenedAt: r.reopened_at ? String(r.reopened_at) : undefined,
+    reopenReason: r.reopen_reason ? String(r.reopen_reason) : undefined,
+    ownerNotes: r.owner_notes ? String(r.owner_notes) : undefined,
     ackDeadline: String(r.ack_deadline),
     resolutionDeadline: r.resolution_deadline ? String(r.resolution_deadline) : undefined,
     managerFindings: r.manager_findings ? String(r.manager_findings) : undefined,
     customerContacted: r.customer_contacted == null ? undefined : bool(r.customer_contacted),
+    customerContactedAt: r.customer_contacted_at ? String(r.customer_contacted_at) : undefined,
     customerContactOutcome: r.customer_contact_outcome
       ? String(r.customer_contact_outcome)
       : undefined,
@@ -143,6 +172,13 @@ export async function loadState(db: D1Database): Promise<AppState> {
       mode: (settings.notification_mode ?? 'FAMILY_PILOT') as AppState['config']['mode'],
       externalNotificationsEnabled: settings.external_notifications_enabled === 'true',
       pilotStoreId: settings.pilot_store_id || undefined,
+      gmailIngestionEnabled: settings.gmail_ingestion_enabled === 'true',
+      gmailAckEnabled: settings.gmail_ack_enabled === 'true',
+      managerAckDeadlineMinutes: Number(settings.manager_ack_deadline_minutes ?? 30),
+      managerResolutionTargetHours: Number(settings.manager_resolution_target_hours ?? 24),
+      escalationIntervalMinutes: Number(settings.escalation_interval_minutes ?? 60),
+      signalWireReconcileAfterMinutes: Number(settings.signalwire_reconcile_after_minutes ?? 10),
+      gmailSearchQuery: settings.gmail_search_query ?? 'newer_than:30d',
     },
   }
 }
@@ -154,15 +190,24 @@ export async function persistState(db: D1Database, state: AppState): Promise<voi
     statements.push(
       db
         .prepare(
-          `UPDATE users SET name=?,email=?,phone=?,active=?,sms_enabled=?,updated_at=? WHERE id=?`,
+          `UPDATE users SET name=?,email=?,phone=?,active=?,sms_enabled=?,complaint_notifications_enabled=?,updated_at=? WHERE id=?`,
         )
-        .bind(u.name, u.email, u.phone, u.active ? 1 : 0, u.smsEnabled ? 1 : 0, now, u.id),
+        .bind(
+          u.name,
+          u.email,
+          u.phone,
+          u.active ? 1 : 0,
+          u.smsEnabled ? 1 : 0,
+          u.complaintNotificationsEnabled ? 1 : 0,
+          now,
+          u.id,
+        ),
     )
   for (const c of state.complaints) {
     statements.push(
       db
         .prepare(
-          `INSERT INTO complaints (id,external_case_id,store_id,assigned_manager_id,subject,complaint_text,category,severity,status,is_ack_overdue,is_resolution_overdue,routing_reason,routing_confidence,received_at,dunkin_acknowledged_at,acknowledgment_body,manager_notified_at,manager_acknowledged_at,investigation_started_at,resolution_submitted_at,closed_at,closed_by,ack_deadline,resolution_deadline,manager_findings,customer_contacted,customer_contact_outcome,corrective_action,resolution_notes,follow_ups,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET store_id=excluded.store_id,assigned_manager_id=excluded.assigned_manager_id,status=excluded.status,is_ack_overdue=excluded.is_ack_overdue,is_resolution_overdue=excluded.is_resolution_overdue,manager_acknowledged_at=excluded.manager_acknowledged_at,investigation_started_at=excluded.investigation_started_at,resolution_submitted_at=excluded.resolution_submitted_at,closed_at=excluded.closed_at,closed_by=excluded.closed_by,manager_findings=excluded.manager_findings,customer_contacted=excluded.customer_contacted,customer_contact_outcome=excluded.customer_contact_outcome,corrective_action=excluded.corrective_action,resolution_notes=excluded.resolution_notes,follow_ups=excluded.follow_ups,updated_at=excluded.updated_at`,
+          `INSERT INTO complaints (id,external_case_id,store_id,assigned_manager_id,subject,complaint_text,category,severity,status,is_ack_overdue,is_resolution_overdue,routing_reason,routing_confidence,received_at,dunkin_acknowledged_at,acknowledgment_body,manager_notified_at,manager_acknowledged_at,investigation_started_at,resolution_submitted_at,closed_at,closed_by,ack_deadline,resolution_deadline,manager_findings,customer_contacted,customer_contacted_at,customer_contact_outcome,corrective_action,resolution_notes,follow_ups,created_at,updated_at,source,gmail_message_id,gmail_thread_id,source_sender,customer_name,customer_email,customer_phone,occurrence_at,acknowledgement_status,owner_reviewed_at,reopened_at,reopen_reason,owner_notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET store_id=excluded.store_id,assigned_manager_id=excluded.assigned_manager_id,status=excluded.status,is_ack_overdue=excluded.is_ack_overdue,is_resolution_overdue=excluded.is_resolution_overdue,dunkin_acknowledged_at=excluded.dunkin_acknowledged_at,acknowledgment_body=excluded.acknowledgment_body,acknowledgement_status=excluded.acknowledgement_status,manager_acknowledged_at=excluded.manager_acknowledged_at,investigation_started_at=excluded.investigation_started_at,resolution_submitted_at=excluded.resolution_submitted_at,closed_at=excluded.closed_at,closed_by=excluded.closed_by,owner_reviewed_at=excluded.owner_reviewed_at,reopened_at=excluded.reopened_at,reopen_reason=excluded.reopen_reason,owner_notes=excluded.owner_notes,manager_findings=excluded.manager_findings,customer_contacted=excluded.customer_contacted,customer_contacted_at=excluded.customer_contacted_at,customer_contact_outcome=excluded.customer_contact_outcome,corrective_action=excluded.corrective_action,resolution_notes=excluded.resolution_notes,follow_ups=excluded.follow_ups,updated_at=excluded.updated_at`,
         )
         .bind(
           c.id,
@@ -179,8 +224,8 @@ export async function persistState(db: D1Database, state: AppState): Promise<voi
           c.routingReason,
           c.routingConfidence,
           c.receivedAt,
-          c.dunkinAcknowledgedAt,
-          c.acknowledgementBody,
+          c.dunkinAcknowledgedAt ?? null,
+          c.acknowledgementBody || null,
           c.managerNotifiedAt ?? null,
           c.managerAcknowledgedAt ?? null,
           c.investigationStartedAt ?? null,
@@ -191,12 +236,26 @@ export async function persistState(db: D1Database, state: AppState): Promise<voi
           c.resolutionDeadline ?? null,
           c.managerFindings ?? null,
           c.customerContacted == null ? null : c.customerContacted ? 1 : 0,
+          c.customerContactedAt ?? null,
           c.customerContactOutcome ?? null,
           c.correctiveAction ?? null,
           c.resolutionNotes ?? null,
           JSON.stringify(c.followUps),
           c.receivedAt,
           now,
+          c.source ?? 'MANUAL',
+          c.gmailMessageId ?? null,
+          c.gmailThreadId ?? null,
+          c.sourceSender ?? null,
+          c.customerName ?? null,
+          c.customerEmail ?? null,
+          c.customerPhone ?? null,
+          c.occurrenceAt ?? null,
+          c.acknowledgementStatus ?? 'DISABLED',
+          c.ownerReviewedAt ?? null,
+          c.reopenedAt ?? null,
+          c.reopenReason ?? null,
+          c.ownerNotes ?? null,
         ),
     )
     for (const e of c.events)
@@ -249,6 +308,46 @@ export async function persistState(db: D1Database, state: AppState): Promise<voi
         `INSERT INTO settings(key,value,updated_at) VALUES('external_notifications_enabled',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`,
       )
       .bind(String(state.config.externalNotificationsEnabled), now),
+    db
+      .prepare(
+        `INSERT INTO settings(key,value,updated_at) VALUES('pilot_store_id',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`,
+      )
+      .bind(state.config.pilotStoreId ?? '', now),
+    db
+      .prepare(
+        `INSERT INTO settings(key,value,updated_at) VALUES('gmail_ingestion_enabled',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`,
+      )
+      .bind(String(Boolean(state.config.gmailIngestionEnabled)), now),
+    db
+      .prepare(
+        `INSERT INTO settings(key,value,updated_at) VALUES('gmail_ack_enabled',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`,
+      )
+      .bind(String(Boolean(state.config.gmailAckEnabled)), now),
+    db
+      .prepare(
+        `INSERT INTO settings(key,value,updated_at) VALUES('manager_ack_deadline_minutes',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`,
+      )
+      .bind(String(state.config.managerAckDeadlineMinutes ?? 30), now),
+    db
+      .prepare(
+        `INSERT INTO settings(key,value,updated_at) VALUES('manager_resolution_target_hours',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`,
+      )
+      .bind(String(state.config.managerResolutionTargetHours ?? 24), now),
+    db
+      .prepare(
+        `INSERT INTO settings(key,value,updated_at) VALUES('escalation_interval_minutes',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`,
+      )
+      .bind(String(state.config.escalationIntervalMinutes ?? 60), now),
+    db
+      .prepare(
+        `INSERT INTO settings(key,value,updated_at) VALUES('signalwire_reconcile_after_minutes',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`,
+      )
+      .bind(String(state.config.signalWireReconcileAfterMinutes ?? 10), now),
+    db
+      .prepare(
+        `INSERT INTO settings(key,value,updated_at) VALUES('gmail_search_query',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`,
+      )
+      .bind(state.config.gmailSearchQuery ?? 'newer_than:30d', now),
   )
   for (let i = 0; i < statements.length; i += 50) await db.batch(statements.slice(i, i + 50))
 }

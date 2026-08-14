@@ -3,7 +3,11 @@ import { authenticate, canAdmin, canViewComplaint, maskEmail, maskPhone } from '
 import { SignalWireSmsProvider, type SignalWireMessage } from '../worker/providers'
 import type { D1Database, D1PreparedStatement } from '../worker/d1'
 import type { Notification, User } from '../src/lib/types'
-import { applySignalWireCallback, reconcileSignalWireMessage } from '../worker/callbacks'
+import {
+  applySignalWireCallback,
+  reconcileSignalWireMessage,
+  reconcileStaleSignalWireNotification,
+} from '../worker/callbacks'
 
 const projectId = '11111111-2222-4333-8444-555555555555'
 const messageSid = 'b155a7c4-17d9-4ba0-a51a-d2d7d36652df'
@@ -81,6 +85,9 @@ function callbackDb(
       } as unknown as D1PreparedStatement
       return statement
     }),
+    batch: vi.fn(async (statements: D1PreparedStatement[]) =>
+      Promise.all(statements.map((statement) => statement.run())),
+    ),
   } as unknown as D1Database
   return { db, prepared, updates: () => updates }
 }
@@ -221,6 +228,39 @@ describe('SignalWire provider reconciliation', () => {
       ).toBe('AUTHENTICITY_FAILED')
       expect(updates()).toBe(0)
     }
+  })
+
+  it('reconciles a stale accepted message without resending or fabricating a callback', async () => {
+    const { db, prepared } = callbackDb({ recipientKind: 'STANDARD', recipientUserId: 'father' })
+    expect(
+      await reconcileStaleSignalWireNotification(
+        db,
+        providerMessage('delivered'),
+        projectId,
+        sender,
+      ),
+    ).toBe('UPDATED')
+    expect(prepared.some((entry) => entry.sql.includes('signalwire_reconciliations'))).toBe(true)
+    expect(prepared.some((entry) => entry.sql.includes('notification_callbacks'))).toBe(false)
+  })
+
+  it('never regresses or rewrites terminal states during scheduled reconciliation', async () => {
+    expect(
+      await reconcileStaleSignalWireNotification(
+        callbackDb({ currentStatus: 'DELIVERED' }).db,
+        providerMessage('delivered'),
+        projectId,
+        sender,
+      ),
+    ).toBe('UNCHANGED')
+    expect(
+      await reconcileStaleSignalWireNotification(
+        callbackDb({ currentStatus: 'DELIVERED' }).db,
+        providerMessage('failed'),
+        projectId,
+        sender,
+      ),
+    ).toBe('AUTHENTICITY_FAILED')
   })
 })
 

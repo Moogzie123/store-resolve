@@ -15,6 +15,7 @@
     "eslint.config.js",
     "playwright.config.ts",
     "worker",
+    "worker-configuration.d.ts",
     "src/lib"
   ]
 }

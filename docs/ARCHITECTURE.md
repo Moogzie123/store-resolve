@@ -1,27 +1,49 @@
-# Architecture
+# StoreResolve architecture
 
-## Runtime
+## Runtime and data flow
 
-- React + TypeScript + Vite client, served as Worker static assets.
-- Hono Worker API with Zod request validation.
-- Cloudflare D1 as the authoritative application database.
-- Framework-independent transition functions in `src/lib/workflow.ts` reused by simulator/API ingestion.
-- D1 hydration/persistence adapter in `worker/d1.ts`.
-- Cloudflare Access identity adapter in `worker/auth.ts`.
-- SignalWire Compatibility API adapter and authenticated callback verification in `worker/providers.ts`.
+StoreResolve is a single Cloudflare Worker deployment. It contains:
 
-The browser loads `/api/bootstrap` and sends every mutation to the Worker. Refreshing or opening another browser rehydrates from D1. Events and per-recipient notification records use stable IDs and `INSERT OR IGNORE`; deadline flags prevent repeated escalation effects.
+- a React/TypeScript client built by Vite and served through the Worker Assets binding;
+- a Hono API with Zod request validation;
+- Cloudflare Access identity mapped to active D1 users;
+- D1 as the authoritative store for complaints, messages, lifecycle events, notification attempts, callbacks, reconciliation, jobs, and settings;
+- a SignalWire Compatibility API adapter for SMS;
+- an isolated Gmail API adapter using server-held OAuth refresh credentials;
+- a five-minute Cloudflare Cron Trigger for Gmail polling, SLA evaluation, and stale-SMS reconciliation.
 
-## Authentication and authorization
+Production flow:
 
-Cloudflare Access is the session boundary. After Access validates the user, the Worker maps `Cf-Access-Authenticated-User-Email` to an active D1 user. Access must protect the Worker hostname so clients cannot supply this header directly. The complaint domain remains independent of authentication.
+```text
+Gmail poll
+  -> GmailProvider retrieves message/MIME metadata
+  -> durable gmail_message claim by Gmail message ID
+  -> deterministic extraction (no LLM)
+  -> exact store-number or normalized alias routing
+  -> complaint create, follow-up attach, ignore, or ROUTING_REVIEW
+  -> optional one-time Gmail acknowledgment (independent kill switch)
+  -> independent ownership and assigned-manager notification records
+  -> server-side rollout and external-send eligibility
+  -> manager acknowledgment/investigation/contact/resolution
+  -> owner review/close/reopen
+  -> scheduled SLA escalation
+  -> reporting and immutable audit history
+```
 
-Owners may view all stores and perform administrative mutations. View-only users receive all-store read access but fail owner mutations. Managers receive only complaints assigned to their user ID and cannot mutate other stores. `DEV_AUTH_USER_ID` exists solely for local Wrangler development and must never be set in production.
+## Idempotency and failure boundaries
 
-## Notification safety
+`gmail_messages.gmail_message_id` is the ingestion idempotency key. Gmail thread ID and the extracted source complaint reference associate follow-ups with an existing complaint. Mailbox unread state is not used as application state. Failed processing remains diagnosable and can be retried without creating a second complaint.
 
-Eligibility is checked server-side immediately before provider invocation. The D1 kill switch overrides severity and mode. In `FAMILY_PILOT`, only `father`, `uncle`, and `grandfather` are valid external recipients; manager records remain auditable as `SUPPRESSED / FAMILY_PILOT`. SignalWire acceptance produces `SENT`, not `DELIVERED`.
+Acknowledgments have a unique complaint and idempotency key. A send moves `PENDING -> IN_FLIGHT` before calling Gmail. `SENT` is terminal. An ambiguous interrupted send remains non-retryable without operator review, preventing automatic duplicate replies.
 
-The `PILOT_ADMIN` recipient is a separate manual-test capability. It is configurable only in `FAMILY_PILOT`, is accepted only by the single-recipient test endpoint, and is always rejected by complaint delivery eligibility with `TEST_RECIPIENT_ONLY`. Complaint creation and escalation never generate notifications for it.
+Each SMS recipient receives a separate notification record. SignalWire acceptance means `SENT`, never `DELIVERED`. The callback-supplied identifier is only a lookup key: the Worker retrieves the authoritative SignalWire record and verifies project, sender, and stored recipient before mutation. Callback and reconciliation transitions use separate audit tables and terminal states cannot regress.
 
-The public SignalWire callback treats the submitted UUID message ID only as a lookup key, retrieves that message from the Compatibility API with server-held credentials, and verifies its project, sender, and stored recipient before any D1 status mutation. Callback records are idempotent, and terminal delivery states cannot regress. A protected owner-only reconciliation path applies the same provider/API identity checks to an existing `PILOT_ADMIN` notification while external notifications are off; reconciliation never fabricates a callback audit row.
+## Authorization
+
+- `OWNER` and `ADMIN` can mutate configuration and all complaints.
+- `VIEW_ONLY` can read but cannot mutate.
+- `STORE_MANAGER` sees and mutates only complaints assigned to that manager.
+- `PILOT_ADMIN` is a notification test capability, not complaint authority, and is excluded from all complaint fanout and escalation.
+- `DEV_AUTH_USER_ID` is local-only and must not exist in production.
+
+Cloudflare Access protects all normal application/API routes. Only the exact `/api/signalwire/status` callback path is exempted, and that route performs its own authoritative provider verification.

@@ -9,7 +9,6 @@ import type {
   User,
 } from './types'
 
-const ownerIds = ['father', 'uncle', 'grandfather']
 const ackMinutes: Record<Severity, number> = { LOW: 60, MEDIUM: 30, HIGH: 15, CRITICAL: 5 }
 const resolutionHours: Partial<Record<Severity, number>> = { LOW: 48, MEDIUM: 24, HIGH: 12 }
 const id = (prefix: string) => `${prefix}-${crypto.randomUUID()}`
@@ -51,7 +50,7 @@ export function eligibility(
       reason: 'TEST_RECIPIENT_ONLY',
       provider: 'MOCK',
     }
-  const owner = ownerIds.includes(recipient.id)
+  const owner = Boolean(recipient.complaintNotificationsEnabled)
   if (config.mode === 'FAMILY_PILOT' && !owner)
     return {
       status: 'SUPPRESSED',
@@ -97,8 +96,10 @@ function notifyOwners(
   message: string,
   now: string,
 ) {
-  for (const ownerId of ownerIds)
-    complaint.notifications.push(notification(state, complaint, ownerId, type, message, now))
+  for (const owner of state.users.filter(
+    (user) => user.complaintNotificationsEnabled && user.recipientKind !== 'PILOT_ADMIN',
+  ))
+    complaint.notifications.push(notification(state, complaint, owner.id, type, message, now))
   complaint.events.push(event(complaint.id, 'OWNER_NOTIFIED', 'system', now, { reason: type }))
 }
 
@@ -106,6 +107,7 @@ export function createComplaint(
   state: AppState,
   input: NewComplaint,
   now = new Date().toISOString(),
+  options: { source?: 'MANUAL' | 'GMAIL'; actor?: string; acknowledged?: boolean } = {},
 ): { state: AppState; complaint: Complaint; duplicate: boolean } {
   const next = structuredClone(state)
   const existing = next.complaints.find(
@@ -119,6 +121,8 @@ export function createComplaint(
   const store = next.stores.find((s) => s.number === input.storeNumber.trim())
   const complaintId = id('cmp')
   const internalCase = `SR-${new Date(now).getUTCFullYear()}-${String(next.complaints.length + 1).padStart(4, '0')}`
+  const acknowledged = options.acknowledged ?? true
+  const actor = options.actor ?? 'simulator'
   const complaint: Complaint = {
     id: complaintId,
     externalCaseId: input.externalCaseId.trim(),
@@ -126,9 +130,10 @@ export function createComplaint(
     assignedManagerId: store?.managerId,
     subject: input.subject,
     complaintText: input.complaintText,
+    source: options.source ?? 'MANUAL',
     category: input.category,
     severity: input.severity,
-    status: store ? 'MANAGER_NOTIFIED' : 'NEW',
+    status: store ? 'MANAGER_NOTIFIED' : 'ROUTING_REVIEW',
     isAckOverdue: false,
     isResolutionOverdue: false,
     routingReason: store
@@ -136,28 +141,41 @@ export function createComplaint(
       : `No match for store number: ${input.storeNumber}`,
     routingConfidence: store ? 'HIGH' : 'REVIEW',
     receivedAt: now,
-    dunkinAcknowledgedAt: now,
+    dunkinAcknowledgedAt: acknowledged ? now : undefined,
+    acknowledgementStatus: acknowledged ? 'SENT' : 'DISABLED',
     acknowledgementBody: acknowledgementTemplate(internalCase),
     managerNotifiedAt: store ? now : undefined,
-    ackDeadline: plus(now, ackMinutes[input.severity], 'minute'),
-    resolutionDeadline: resolutionHours[input.severity]
-      ? plus(now, resolutionHours[input.severity]!, 'hour')
-      : undefined,
+    ackDeadline: plus(
+      now,
+      state.config.managerAckDeadlineMinutes ?? ackMinutes[input.severity],
+      'minute',
+    ),
+    resolutionDeadline:
+      (state.config.managerResolutionTargetHours ?? resolutionHours[input.severity])
+        ? plus(
+            now,
+            state.config.managerResolutionTargetHours ?? resolutionHours[input.severity]!,
+            'hour',
+          )
+        : undefined,
     events: [],
     notifications: [],
     followUps: [],
   }
   complaint.id = internalCase
   complaint.events.push(
-    event(complaint.id, 'COMPLAINT_RECEIVED', 'simulator', now),
+    event(complaint.id, 'COMPLAINT_RECEIVED', actor, now),
     event(complaint.id, store ? 'STORE_ASSIGNED' : 'ROUTING_REVIEW_REQUIRED', 'system', now, {
       reason: complaint.routingReason,
     }),
-    event(complaint.id, 'DUNKIN_ACKNOWLEDGED', 'system', now, {
-      simulated: true,
-      templateVersion: 'v1',
-    }),
   )
+  if (acknowledged)
+    complaint.events.push(
+      event(complaint.id, 'DUNKIN_ACKNOWLEDGED', 'system', now, {
+        simulated: options.source !== 'GMAIL',
+        templateVersion: 'v1',
+      }),
+    )
   const storeLabel = store ? `#${store.number}` : 'Routing review required'
   notifyOwners(
     next,
@@ -213,23 +231,29 @@ export function updateComplaint(
     throw new Error('Manager access required')
   if (['CLOSE', 'REOPEN'].includes(action) && !isOwner) throw new Error('Owner access required')
   if (action === 'ACKNOWLEDGE') {
+    if (c.status !== 'MANAGER_NOTIFIED') throw new Error('Complaint is not awaiting acknowledgment')
     c.status = 'ACKNOWLEDGED'
     c.managerAcknowledgedAt = now
     c.events.push(event(c.id, 'MANAGER_ACKNOWLEDGED', actor.name, now))
   }
   if (action === 'START_INVESTIGATION') {
+    if (c.status !== 'ACKNOWLEDGED') throw new Error('Complaint must be acknowledged first')
     c.status = 'INVESTIGATING'
     c.investigationStartedAt = now
     c.events.push(event(c.id, 'INVESTIGATION_STARTED', actor.name, now))
   }
   if (action === 'CONTACT_CUSTOMER') {
+    if (!['ACKNOWLEDGED', 'INVESTIGATING'].includes(c.status))
+      throw new Error('Investigation must be active before customer contact')
     c.customerContacted = true
+    c.customerContactedAt = now
     c.customerContactOutcome = String(data.outcome ?? 'Contact recorded')
     c.events.push(
       event(c.id, 'CUSTOMER_CONTACTED', actor.name, now, { outcome: c.customerContactOutcome }),
     )
   }
   if (action === 'SUBMIT_RESOLUTION') {
+    if (c.status !== 'INVESTIGATING') throw new Error('Investigation must be started first')
     c.status = 'RESOLUTION_SUBMITTED'
     c.managerFindings = String(data.findings ?? '')
     c.correctiveAction = String(data.correctiveAction ?? '')
@@ -250,14 +274,21 @@ export function updateComplaint(
     c.status = 'CLOSED'
     c.closedAt = now
     c.closedBy = actor.name
+    c.ownerReviewedAt = now
+    c.ownerNotes = String(data.ownerNotes ?? '')
     c.events.push(event(c.id, 'COMPLAINT_CLOSED', actor.name, now))
     notifyOwners(next, c, 'COMPLAINT_CLOSED', `COMPLAINT CLOSED\nCase: ${c.id}`, now)
   }
   if (action === 'REOPEN') {
+    if (c.status !== 'CLOSED') throw new Error('Only a closed complaint can be reopened')
+    const reason = String(data.reason ?? '').trim()
+    if (!reason) throw new Error('A reopen reason is required')
     c.status = 'INVESTIGATING'
     c.closedAt = undefined
     c.closedBy = undefined
-    c.events.push(event(c.id, 'COMPLAINT_REOPENED', actor.name, now))
+    c.reopenedAt = now
+    c.reopenReason = reason
+    c.events.push(event(c.id, 'COMPLAINT_REOPENED', actor.name, now, { reason }))
     notifyOwners(next, c, 'COMPLAINT_REOPENED', `COMPLAINT REOPENED\nCase: ${c.id}`, now)
   }
   return next
