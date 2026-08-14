@@ -331,7 +331,6 @@ describe('SignalWire boundary', () => {
         new Response(
           JSON.stringify({
             id: messageSid,
-            project_id: projectId,
             status: 'delivered',
             from: sender,
             to: recipient,

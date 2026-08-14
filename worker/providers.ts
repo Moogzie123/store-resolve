@@ -76,11 +76,19 @@ function safeDiagnostic(value: unknown, secrets: Array<string | undefined>): str
   return message.replace(/[\r\n\t]+/g, ' ').slice(0, 300)
 }
 
-function messageFrom(value: unknown): SignalWireMessage | undefined {
+function messageFrom(
+  value: unknown,
+  authenticatedProjectId?: string,
+): SignalWireMessage | undefined {
   if (!value || typeof value !== 'object') return undefined
   const body = value as Record<string, unknown>
   const sid = typeof body.sid === 'string' ? body.sid : body.id
-  const accountSid = typeof body.account_sid === 'string' ? body.account_sid : body.project_id
+  const accountSid =
+    typeof body.account_sid === 'string'
+      ? body.account_sid
+      : typeof body.project_id === 'string'
+        ? body.project_id
+        : authenticatedProjectId
   if (
     typeof sid !== 'string' ||
     typeof accountSid !== 'string' ||
@@ -228,7 +236,7 @@ export class SignalWireSmsProvider implements NotificationProvider {
       { headers: { accept: 'application/json', authorization: this.authorization } },
     )
     const nativeBody = await this.responseBody(nativeResponse)
-    const nativeMessage = messageFrom(nativeBody)
+    const nativeMessage = messageFrom(nativeBody, projectId)
     if (!nativeResponse.ok || !nativeMessage)
       throw new Error(
         safeDiagnostic(
