@@ -315,7 +315,7 @@ app.get('/api/admin/email/pilot-diagnostic', async (c) => {
   try {
     await graph.verifyConnection()
     const selection = await graph.findPilotComplaintCandidates()
-    return c.json({
+    const result = {
       ok: true,
       scope: 'INBOX_METADATA_ONLY',
       rawMetadataCandidateCount: selection.inspectedCandidates.length,
@@ -334,7 +334,10 @@ app.get('/api/admin/email/pilot-diagnostic', async (c) => {
         previousSubjectPrefixMatched: candidate.previousSubjectPrefixMatched,
         previousWindowMatched: candidate.previousWindowMatched,
       })),
-    })
+    }
+    return c.req.header('accept')?.includes('text/html')
+      ? c.text(JSON.stringify(result, null, 2))
+      : c.json(result)
   } catch (error) {
     const code = error instanceof EmailProviderError ? error.code : 'MS_GRAPH_DIAGNOSTIC_FAILED'
     return c.json({ ok: false, error: code }, 503)
