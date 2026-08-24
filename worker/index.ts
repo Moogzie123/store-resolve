@@ -315,9 +315,14 @@ app.get('/api/admin/email/pilot-diagnostic', async (c) => {
   try {
     await graph.verifyConnection()
     const selection = await graph.findPilotComplaintCandidates()
+    const uniqueCandidate =
+      !selection.hasMore && selection.candidates.length === 1 ? selection.candidates[0] : undefined
+    const folder = uniqueCandidate
+      ? await graph.getMailFolderMetadata(uniqueCandidate.parentFolderId)
+      : undefined
     const result = {
       ok: true,
-      scope: 'INBOX_METADATA_ONLY',
+      scope: 'ALL_MAILBOX_METADATA_ONLY',
       rawMetadataCandidateCount: selection.inspectedCandidates.length,
       hasMoreMetadataCandidates: selection.hasMore,
       finalCandidateCount: selection.candidates.length,
@@ -331,6 +336,8 @@ app.get('/api/admin/email/pilot-diagnostic', async (c) => {
         caseIdMatched: candidate.caseIdMatched,
         subjectPhraseMatched: candidate.subjectPhraseMatched,
         storeTokenMatched: candidate.storeTokenMatched,
+        folderDisplayName:
+          folder && uniqueCandidate?.id === candidate.id ? folder.displayName : undefined,
         previousSubjectPrefixMatched: candidate.previousSubjectPrefixMatched,
         previousWindowMatched: candidate.previousWindowMatched,
       })),

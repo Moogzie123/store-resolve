@@ -19,6 +19,7 @@ interface GraphAddress {
 export interface GraphMessage {
   id?: string
   conversationId?: string
+  parentFolderId?: string
   internetMessageId?: string
   receivedDateTime?: string
   subject?: string
@@ -34,6 +35,7 @@ export interface GraphMessage {
 export interface PilotMessageSelection {
   id: string
   conversationId: string
+  parentFolderId: string
   receivedDateTime: string
   subject: string
   senderAddress: string
@@ -236,19 +238,20 @@ export class MicrosoftGraphProvider implements EmailProvider {
         `receivedDateTime le ${pilotMessageSelector.receivedEnd}`,
         `from/emailAddress/address eq '${pilotMessageSelector.senderAddress}'`,
       ].join(' and '),
-      $select: 'id,conversationId,subject,receivedDateTime,from',
+      $select: 'id,conversationId,parentFolderId,subject,receivedDateTime,from',
       $top: '3',
     })
     const page = await this.request<{
       value?: GraphMessage[]
       '@odata.nextLink'?: string
-    }>(`/me/mailFolders/inbox/messages?${params.toString()}`)
+    }>(`/me/messages?${params.toString()}`)
     const inspectedCandidates = (page.value ?? []).map((candidate) => {
       const senderAddress = candidate.from?.emailAddress?.address?.trim() ?? ''
       const receivedAt = Date.parse(candidate.receivedDateTime ?? '')
       if (
         !candidate.id ||
         !candidate.conversationId ||
+        !candidate.parentFolderId ||
         !candidate.receivedDateTime ||
         !candidate.subject ||
         !Number.isFinite(receivedAt)
@@ -261,6 +264,7 @@ export class MicrosoftGraphProvider implements EmailProvider {
       return {
         id: candidate.id,
         conversationId: candidate.conversationId,
+        parentFolderId: candidate.parentFolderId,
         receivedDateTime: candidate.receivedDateTime,
         subject: candidate.subject,
         senderAddress,
@@ -285,6 +289,18 @@ export class MicrosoftGraphProvider implements EmailProvider {
     })
     const candidates = inspectedCandidates.filter(isApprovedPilotMessageMetadata)
     return { candidates, inspectedCandidates, hasMore: Boolean(page['@odata.nextLink']) }
+  }
+
+  async getMailFolderMetadata(id: string): Promise<{ id: string; displayName: string }> {
+    const folder = await this.request<{ id?: string; displayName?: string }>(
+      `/me/mailFolders/${encodeURIComponent(id)}?$select=id,displayName`,
+    )
+    if (!folder.id || !folder.displayName)
+      throw new EmailProviderError(
+        'MS_GRAPH_INVALID_FOLDER_METADATA',
+        'Microsoft Graph folder metadata was incomplete',
+      )
+    return { id: folder.id, displayName: folder.displayName }
   }
 
   async listMessageIds(lookbackDays: number, maxResults = 25): Promise<string[]> {
