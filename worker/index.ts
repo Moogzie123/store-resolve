@@ -335,9 +335,14 @@ app.get('/api/admin/email/pilot-diagnostic', async (c) => {
         previousWindowMatched: candidate.previousWindowMatched,
       })),
     }
-    return c.req.header('accept')?.includes('text/html')
-      ? c.text(JSON.stringify(result, null, 2))
-      : c.json(result)
+    if (c.req.header('accept')?.includes('text/html')) {
+      const escaped = JSON.stringify(result, null, 2)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+      return c.html(`<pre>${escaped}</pre>`)
+    }
+    return c.json(result)
   } catch (error) {
     const code = error instanceof EmailProviderError ? error.code : 'MS_GRAPH_DIAGNOSTIC_FAILED'
     return c.json({ ok: false, error: code }, 503)
