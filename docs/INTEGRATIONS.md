@@ -37,6 +37,8 @@ The production authority is `consumers`. StoreResolve requests immutable Outlook
 
 Email ingestion and acknowledgment have separate D1 switches. Both default off. Runtime readiness refreshes the delegated access token and reads only Inbox folder metadata (`id`, display name, and item counts); it never enumerates messages, reads message bodies, creates ingestion rows, or sends a reply.
 
+The controlled production pilot uses a fixed, Inbox-only metadata selector containing an approved sender, subject prefix, and UTC time window. It requests at most two metadata rows to prove uniqueness, reads one message body only when exactly one metadata result matches, and atomically consumes the explicitly reset one-shot lock before that body request.
+
 ## Microsoft personal-account OAuth setup gate
 
 In Microsoft Entra admin center:

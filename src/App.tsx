@@ -345,7 +345,7 @@ export default function App() {
                   show(
                     result.accessed
                       ? `One-shot mail ingestion ${result.status?.toLowerCase() ?? 'completed'}`
-                      : 'No recent matching complaint was found',
+                      : `Controlled selector matched ${result.matchCount ?? 0} messages; no content read`,
                   )
                 } catch (error) {
                   show((error as Error).message)
@@ -1572,8 +1572,8 @@ function PilotControls({
             Ingest one recent Dunkin complaint
           </button>
           <small>
-            One-shot pilot: Inbox search is fixed to Dunkin + complaint, limited to one recent
-            message, and cannot be retried automatically.
+            One-shot pilot: Inbox metadata must match the approved sender, subject prefix, and
+            five-minute window. At most two metadata rows prove uniqueness before one body read.
           </small>
         </section>
         <section className="panel settings-card">

@@ -4,7 +4,7 @@ import type { D1Database } from './d1'
 import { loadState, persistState } from './d1'
 import type { EmailProvider, NormalizedEmailMessage } from './email-provider'
 import { EmailProviderError } from './email-provider'
-import type { MicrosoftGraphProvider } from './microsoft-graph'
+import { pilotMessageSelector, type MicrosoftGraphProvider } from './microsoft-graph'
 
 export type EmailProcessingStatus =
   | 'PROCESSED'
@@ -137,6 +137,7 @@ export async function ingestSinglePilotComplaint(
   complaintId?: string
   messageId?: string
   conversationId?: string
+  matchCount?: 0 | 1 | '2+'
 }> {
   if (config.mode !== 'FAMILY_PILOT')
     throw new EmailProviderError(
@@ -161,41 +162,59 @@ export async function ingestSinglePilotComplaint(
   if (!emailProvider.ready)
     throw new EmailProviderError('MS_GRAPH_NOT_CONFIGURED', 'Microsoft Graph is not configured')
 
+  await emailProvider.verifyConnection()
+  const selection = await emailProvider.findPilotComplaintCandidates()
+  const matchCount: 0 | 1 | '2+' =
+    selection.hasMore || selection.candidates.length > 1
+      ? '2+'
+      : selection.candidates.length === 1
+        ? 1
+        : 0
+  if (matchCount !== 1) return { accessed: false, matchCount }
+
+  const selected = selection.candidates[0]
+  if (!selected)
+    throw new EmailProviderError(
+      'MS_GRAPH_PILOT_INVALID_SELECTION',
+      'Microsoft Graph pilot selection was not uniquely available',
+    )
   const attemptId = crypto.randomUUID()
   const startedAt = new Date().toISOString()
-  await db
-    .prepare(
-      `INSERT OR IGNORE INTO background_job_locks(job_name,locked_until,owner_run_id,updated_at) VALUES('EMAIL_PILOT','1970-01-01T00:00:00.000Z','',?)`,
-    )
-    .bind(startedAt)
-    .run()
   const claimed = await db
     .prepare(
-      `UPDATE background_job_locks SET locked_until='9999-12-31T23:59:59.999Z',owner_run_id=?,updated_at=? WHERE job_name='EMAIL_PILOT' AND locked_until<=?`,
+      `UPDATE background_job_locks SET locked_until='9999-12-30T23:59:59.999Z',owner_run_id=?,updated_at=? WHERE job_name='EMAIL_PILOT' AND locked_until='9999-12-31T23:59:59.999Z'`,
     )
-    .bind(attemptId, startedAt, startedAt)
+    .bind(attemptId, startedAt)
     .run()
   if (Number(claimed.meta?.changes ?? 0) !== 1)
     throw new EmailProviderError(
-      'MS_GRAPH_PILOT_ALREADY_ATTEMPTED',
-      'The controlled mail-ingestion attempt has already been used',
+      'MS_GRAPH_PILOT_LOCK_RESET_FAILED',
+      'The previous one-shot lock was not available for the approved reset',
     )
+  await recordIntegrationEvent(db, 'PILOT_INGESTION_LOCK_RESET', attemptId, 'SUCCESS')
   await recordIntegrationEvent(db, 'PILOT_INGESTION_ATTEMPT_STARTED', attemptId, 'SUCCESS')
 
-  await emailProvider.verifyConnection()
-  const selected = await emailProvider.findLatestPilotComplaintMessage(7)
-  if (!selected) return { accessed: false }
   const message = await emailProvider.getMessage(selected.id)
+  const senderMatches =
+    message.sender.trim().toLowerCase() === pilotMessageSelector.senderAddress ||
+    message.sender.toLowerCase().endsWith(`<${pilotMessageSelector.senderAddress}>`)
+  const receivedAt = Date.parse(message.internalDate)
   if (
     message.id !== selected.id ||
-    Date.parse(message.internalDate) !== Date.parse(selected.receivedDateTime)
+    message.threadId !== selected.conversationId ||
+    Date.parse(message.internalDate) !== Date.parse(selected.receivedDateTime) ||
+    !senderMatches ||
+    !message.subject.startsWith(pilotMessageSelector.subjectPrefix) ||
+    !Number.isFinite(receivedAt) ||
+    receivedAt < Date.parse(pilotMessageSelector.receivedStart) ||
+    receivedAt > Date.parse(pilotMessageSelector.receivedEnd)
   )
     throw new EmailProviderError(
       'MS_GRAPH_PILOT_IDENTITY_MISMATCH',
       'Microsoft Graph pilot message identity did not match the selected record',
     )
   const extraction = extractComplaint(message)
-  if (!/\bdunkin\b/i.test(`${message.subject}\n${message.textBody}`) || !extraction.isComplaint)
+  if (!extraction.isComplaint)
     throw new EmailProviderError(
       'MS_GRAPH_PILOT_NOT_COMPLAINT',
       'The selected message did not satisfy the controlled complaint checks',
@@ -216,6 +235,7 @@ export async function ingestSinglePilotComplaint(
     complaintId: result.complaintId,
     messageId: message.id,
     conversationId: message.threadId,
+    matchCount,
   }
 }
 

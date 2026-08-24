@@ -33,8 +33,19 @@ export interface GraphMessage {
 
 export interface PilotMessageSelection {
   id: string
+  conversationId: string
+  internetMessageId?: string
   receivedDateTime: string
+  subject: string
+  senderAddress: string
 }
+
+export const pilotMessageSelector = {
+  senderAddress: 'customerservice@dunkinbrands.com',
+  subjectPrefix: 'DBI Case # (CCC11122413) - Guest Contact: Slow Service',
+  receivedStart: '2026-08-01T18:25:00.000Z',
+  receivedEnd: '2026-08-01T18:30:00.000Z',
+} as const
 
 const GRAPH_ROOT = 'https://graph.microsoft.com/v1.0'
 const GRAPH_SCOPES = [
@@ -189,33 +200,53 @@ export class MicrosoftGraphProvider implements EmailProvider {
       )
   }
 
-  async findLatestPilotComplaintMessage(
-    maxAgeDays = 7,
-    now = Date.now(),
-  ): Promise<PilotMessageSelection | undefined> {
+  async findPilotComplaintCandidates(): Promise<{
+    candidates: PilotMessageSelection[]
+    hasMore: boolean
+  }> {
+    const escapedSubject = pilotMessageSelector.subjectPrefix.replace(/'/g, "''")
     const params = new URLSearchParams({
-      $search: '"Dunkin AND complaint"',
-      $select: 'id,receivedDateTime',
-      $top: '1',
+      $filter: [
+        `receivedDateTime ge ${pilotMessageSelector.receivedStart}`,
+        `receivedDateTime le ${pilotMessageSelector.receivedEnd}`,
+        `from/emailAddress/address eq '${pilotMessageSelector.senderAddress}'`,
+        `startswith(subject,'${escapedSubject}')`,
+      ].join(' and '),
+      $select: 'id,conversationId,internetMessageId,receivedDateTime,subject,from',
+      $top: '2',
     })
-    const page = await this.request<{ value?: Array<{ id?: string; receivedDateTime?: string }> }>(
-      `/me/mailFolders/inbox/messages?${params.toString()}`,
-    )
-    const candidate = page.value?.[0]
-    if (!candidate) return undefined
-    if (!candidate.id || !candidate.receivedDateTime)
-      throw new EmailProviderError(
-        'MS_GRAPH_PILOT_INVALID_SELECTION',
-        'Microsoft Graph pilot selection is incomplete',
+    const page = await this.request<{
+      value?: GraphMessage[]
+      '@odata.nextLink'?: string
+    }>(`/me/mailFolders/inbox/messages?${params.toString()}`)
+    const candidates = (page.value ?? []).map((candidate) => {
+      const senderAddress = candidate.from?.emailAddress?.address?.trim() ?? ''
+      const receivedAt = Date.parse(candidate.receivedDateTime ?? '')
+      if (
+        !candidate.id ||
+        !candidate.conversationId ||
+        !candidate.receivedDateTime ||
+        !candidate.subject ||
+        senderAddress.toLowerCase() !== pilotMessageSelector.senderAddress ||
+        !candidate.subject.startsWith(pilotMessageSelector.subjectPrefix) ||
+        !Number.isFinite(receivedAt) ||
+        receivedAt < Date.parse(pilotMessageSelector.receivedStart) ||
+        receivedAt > Date.parse(pilotMessageSelector.receivedEnd)
       )
-    const receivedAt = Date.parse(candidate.receivedDateTime)
-    const cutoff = now - Math.max(1, Math.min(maxAgeDays, 30)) * 86_400_000
-    if (!Number.isFinite(receivedAt) || receivedAt < cutoff || receivedAt > now + 300_000)
-      throw new EmailProviderError(
-        'MS_GRAPH_PILOT_MESSAGE_OUTSIDE_WINDOW',
-        'Microsoft Graph pilot selection is outside the approved recent window',
-      )
-    return { id: candidate.id, receivedDateTime: candidate.receivedDateTime }
+        throw new EmailProviderError(
+          'MS_GRAPH_PILOT_INVALID_SELECTION',
+          'Microsoft Graph pilot metadata did not satisfy every approved selector',
+        )
+      return {
+        id: candidate.id,
+        conversationId: candidate.conversationId,
+        internetMessageId: candidate.internetMessageId,
+        receivedDateTime: candidate.receivedDateTime,
+        subject: candidate.subject,
+        senderAddress,
+      }
+    })
+    return { candidates, hasMore: Boolean(page['@odata.nextLink']) }
   }
 
   async listMessageIds(lookbackDays: number, maxResults = 25): Promise<string[]> {

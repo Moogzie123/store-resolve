@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { MicrosoftGraphProvider, normalizeGraphMessage } from '../worker/microsoft-graph'
+import {
+  MicrosoftGraphProvider,
+  normalizeGraphMessage,
+  pilotMessageSelector,
+} from '../worker/microsoft-graph'
 import { ingestSinglePilotComplaint, pollEmail } from '../worker/ingestion'
 import type { D1Database } from '../worker/d1'
 
@@ -144,52 +148,162 @@ describe('Microsoft Graph delegated mail provider', () => {
     expect(fetch).not.toHaveBeenCalled()
   })
 
-  it('selects at most one recent Inbox message with the fixed pilot search', async () => {
-    const now = Date.parse('2026-08-24T06:00:00Z')
+  it('uses every approved selector in an Inbox-only metadata query capped at two', async () => {
     const fetch = vi
       .fn()
       .mockResolvedValueOnce(tokenResponse())
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
-            value: [{ id: 'pilot-message-id', receivedDateTime: '2026-08-24T05:00:00Z' }],
+            value: [
+              {
+                id: 'pilot-message-id',
+                conversationId: 'pilot-conversation-id',
+                internetMessageId: '<pilot@example.invalid>',
+                receivedDateTime: '2026-08-01T18:27:00Z',
+                subject: pilotMessageSelector.subjectPrefix,
+                from: { emailAddress: { address: pilotMessageSelector.senderAddress } },
+              },
+            ],
           }),
           { status: 200 },
         ),
       )
     vi.stubGlobal('fetch', fetch)
     await expect(
-      new MicrosoftGraphProvider(config).findLatestPilotComplaintMessage(7, now),
+      new MicrosoftGraphProvider(config).findPilotComplaintCandidates(),
     ).resolves.toEqual({
-      id: 'pilot-message-id',
-      receivedDateTime: '2026-08-24T05:00:00Z',
+      candidates: [
+        {
+          id: 'pilot-message-id',
+          conversationId: 'pilot-conversation-id',
+          internetMessageId: '<pilot@example.invalid>',
+          receivedDateTime: '2026-08-01T18:27:00Z',
+          subject: pilotMessageSelector.subjectPrefix,
+          senderAddress: pilotMessageSelector.senderAddress,
+        },
+      ],
+      hasMore: false,
     })
     const url = new URL(String(fetch.mock.calls[1][0]))
     expect(url.pathname).toBe('/v1.0/me/mailFolders/inbox/messages')
-    expect(url.searchParams.get('$search')).toBe('"Dunkin AND complaint"')
-    expect(url.searchParams.get('$select')).toBe('id,receivedDateTime')
-    expect(url.searchParams.get('$top')).toBe('1')
+    const filter = url.searchParams.get('$filter') ?? ''
+    expect(filter).toContain(`from/emailAddress/address eq '${pilotMessageSelector.senderAddress}'`)
+    expect(filter).toContain(`startswith(subject,'${pilotMessageSelector.subjectPrefix}')`)
+    expect(filter).toContain(`receivedDateTime ge ${pilotMessageSelector.receivedStart}`)
+    expect(filter).toContain(`receivedDateTime le ${pilotMessageSelector.receivedEnd}`)
+    expect(url.searchParams.get('$select')).toBe(
+      'id,conversationId,internetMessageId,receivedDateTime,subject,from',
+    )
+    expect(url.searchParams.get('$top')).toBe('2')
   })
 
-  it('rejects a pilot selector outside the recent window', async () => {
+  it.each([
+    [[], 0],
+    [
+      [
+        {
+          id: 'pilot-message-1',
+          conversationId: 'conversation-1',
+          receivedDateTime: '2026-08-01T18:26:00Z',
+          subject: pilotMessageSelector.subjectPrefix,
+          from: { emailAddress: { address: pilotMessageSelector.senderAddress } },
+        },
+        {
+          id: 'pilot-message-2',
+          conversationId: 'conversation-2',
+          receivedDateTime: '2026-08-01T18:27:00Z',
+          subject: pilotMessageSelector.subjectPrefix,
+          from: { emailAddress: { address: pilotMessageSelector.senderAddress } },
+        },
+      ],
+      '2+',
+    ],
+  ])(
+    'does not fetch content or touch D1 when metadata match count is %s',
+    async (value, matchCount) => {
+      const fetch = vi
+        .fn()
+        .mockResolvedValueOnce(tokenResponse())
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ id: 'inbox-folder-id', displayName: 'Inbox' }), {
+            status: 200,
+          }),
+        )
+        .mockResolvedValueOnce(tokenResponse())
+        .mockResolvedValueOnce(new Response(JSON.stringify({ value }), { status: 200 }))
+      vi.stubGlobal('fetch', fetch)
+      await expect(
+        ingestSinglePilotComplaint({} as D1Database, new MicrosoftGraphProvider(config), {
+          mode: 'FAMILY_PILOT',
+          externalNotificationsEnabled: false,
+          emailIngestionEnabled: false,
+          emailAckEnabled: false,
+        }),
+      ).resolves.toEqual({ accessed: false, matchCount })
+      expect(fetch).toHaveBeenCalledTimes(4)
+      expect(fetch.mock.calls.map(([url]) => String(url))).not.toEqual(
+        expect.arrayContaining([expect.stringMatching(/\/me\/messages\//)]),
+      )
+    },
+  )
+
+  it('resets only the previous one-shot lock after exactly one metadata match', async () => {
+    const metadata = {
+      id: 'pilot-message-id',
+      conversationId: 'pilot-conversation-id',
+      receivedDateTime: '2026-08-01T18:27:00Z',
+      subject: pilotMessageSelector.subjectPrefix,
+      from: { emailAddress: { address: pilotMessageSelector.senderAddress } },
+    }
     const fetch = vi
       .fn()
       .mockResolvedValueOnce(tokenResponse())
       .mockResolvedValueOnce(
+        new Response(JSON.stringify({ id: 'inbox-folder-id', displayName: 'Inbox' }), {
+          status: 200,
+        }),
+      )
+      .mockResolvedValueOnce(tokenResponse())
+      .mockResolvedValueOnce(new Response(JSON.stringify({ value: [metadata] }), { status: 200 }))
+      .mockResolvedValueOnce(tokenResponse())
+      .mockResolvedValueOnce(
         new Response(
           JSON.stringify({
-            value: [{ id: 'old-message-id', receivedDateTime: '2026-08-01T05:00:00Z' }],
+            ...metadata,
+            toRecipients: [{ emailAddress: { address: config.mailboxAddress } }],
+            body: { contentType: 'text', content: 'This is ordinary correspondence.' },
           }),
           { status: 200 },
         ),
       )
     vi.stubGlobal('fetch', fetch)
+    const statements: string[] = []
+    const db = {
+      prepare(sql: string) {
+        statements.push(sql)
+        const statement = {
+          bind: () => statement,
+          run: async () => ({ meta: { changes: 1 } }),
+        }
+        return statement
+      },
+    } as unknown as D1Database
     await expect(
-      new MicrosoftGraphProvider(config).findLatestPilotComplaintMessage(
-        7,
-        Date.parse('2026-08-24T06:00:00Z'),
-      ),
-    ).rejects.toMatchObject({ code: 'MS_GRAPH_PILOT_MESSAGE_OUTSIDE_WINDOW' })
+      ingestSinglePilotComplaint(db, new MicrosoftGraphProvider(config), {
+        mode: 'FAMILY_PILOT',
+        externalNotificationsEnabled: false,
+        emailIngestionEnabled: false,
+        emailAckEnabled: false,
+      }),
+    ).rejects.toMatchObject({ code: 'MS_GRAPH_PILOT_NOT_COMPLAINT' })
+    const lockStatements = statements.filter((sql) => sql.includes('background_job_locks'))
+    expect(lockStatements).toHaveLength(1)
+    expect(lockStatements[0]).toContain("locked_until='9999-12-30T23:59:59.999Z'")
+    expect(lockStatements[0]).toContain("locked_until='9999-12-31T23:59:59.999Z'")
+    expect(
+      statements.some((sql) => sql.includes('INSERT OR IGNORE INTO background_job_locks')),
+    ).toBe(false)
   })
 
   it('refuses the one-shot pilot path unless all outbound controls stay off', async () => {
