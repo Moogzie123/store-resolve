@@ -19,12 +19,20 @@ const tokenResponse = () =>
 describe('Microsoft Graph delegated mail provider', () => {
   afterEach(() => vi.unstubAllGlobals())
 
-  it('refreshes against the consumer authority with only the required delegated scopes', async () => {
+  it('checks Inbox metadata using only the required delegated mail scopes', async () => {
     const fetch = vi
       .fn()
       .mockResolvedValueOnce(tokenResponse())
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ mail: config.mailboxAddress }), { status: 200 }),
+        new Response(
+          JSON.stringify({
+            id: 'inbox-folder-id',
+            displayName: 'Inbox',
+            totalItemCount: 10,
+            unreadItemCount: 2,
+          }),
+          { status: 200 },
+        ),
       )
     vi.stubGlobal('fetch', fetch)
     await new MicrosoftGraphProvider(config).verifyConnection()
@@ -38,7 +46,35 @@ describe('Microsoft Graph delegated mail provider', () => {
       'https://graph.microsoft.com/Mail.Send',
     ])
     expect(form.has('client_secret')).toBe(false)
+    const readinessUrl = new URL(String(fetch.mock.calls[1][0]))
+    expect(readinessUrl.pathname).toBe('/v1.0/me/mailFolders/inbox')
+    expect(readinessUrl.searchParams.get('$select')).toBe(
+      'id,displayName,totalItemCount,unreadItemCount',
+    )
+    expect(readinessUrl.pathname).not.toBe('/v1.0/me')
+    expect(fetch).toHaveBeenCalledTimes(2)
   })
+
+  it.each([
+    [401, 'MS_GRAPH_API_401'],
+    [403, 'MS_GRAPH_API_403_SCOPE'],
+  ])(
+    'surfaces a %i metadata-readiness failure without starting ingestion',
+    async (status, code) => {
+      const fetch = vi
+        .fn()
+        .mockResolvedValueOnce(tokenResponse())
+        .mockResolvedValueOnce(new Response(null, { status }))
+      vi.stubGlobal('fetch', fetch)
+      await expect(new MicrosoftGraphProvider(config).verifyConnection()).rejects.toMatchObject({
+        code,
+        status,
+      })
+      expect(fetch).toHaveBeenCalledTimes(2)
+      expect(String(fetch.mock.calls[1][0])).toContain('/me/mailFolders/inbox?')
+      expect(String(fetch.mock.calls[1][0])).not.toContain('/messages')
+    },
+  )
 
   it('retrieves immutable message, conversation, addressing, headers and body metadata', async () => {
     const graphMessage = {

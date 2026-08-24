@@ -176,14 +176,16 @@ export class MicrosoftGraphProvider implements EmailProvider {
   }
 
   async verifyConnection(): Promise<void> {
-    const profile = await this.request<{ mail?: string; userPrincipalName?: string }>(
-      '/me?$select=mail,userPrincipalName',
-    )
-    const mailbox = (profile.mail ?? profile.userPrincipalName ?? '').toLowerCase()
-    if (mailbox !== this.config.mailboxAddress?.trim().toLowerCase())
+    const folder = await this.request<{
+      id?: string
+      displayName?: string
+      totalItemCount?: number
+      unreadItemCount?: number
+    }>('/me/mailFolders/inbox?$select=id,displayName,totalItemCount,unreadItemCount')
+    if (!folder.id)
       throw new EmailProviderError(
-        'MS_GRAPH_MAILBOX_MISMATCH',
-        'Signed-in Microsoft mailbox does not match configuration',
+        'MS_GRAPH_INVALID_MAILBOX_METADATA',
+        'Microsoft Graph Inbox metadata is incomplete',
       )
   }
 

@@ -276,6 +276,21 @@ app.post('/api/admin/email/pilot-ingest', async (c) => {
   }
 })
 
+app.get('/api/admin/email/readiness', async (c) => {
+  const user = c.get('user')
+  if (!canAdmin(user)) return c.json(jsonError('Owner access required'), 403)
+  const graph = emailProvider(c.env)
+  if (!graph.ready)
+    return c.json({ ok: false, ready: false, error: 'MS_GRAPH_NOT_CONFIGURED' }, 503)
+  try {
+    await graph.verifyConnection()
+    return c.json({ ok: true, ready: true, check: 'INBOX_FOLDER_METADATA' })
+  } catch (error) {
+    const code = error instanceof EmailProviderError ? error.code : 'MS_GRAPH_READINESS_FAILED'
+    return c.json({ ok: false, ready: false, error: code }, 503)
+  }
+})
+
 app.get('/api/admin/reporting', async (c) => {
   const user = c.get('user')
   if (!canAdmin(user)) return c.json(jsonError('Owner access required'), 403)

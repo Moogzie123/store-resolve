@@ -35,7 +35,7 @@ Mail.Send
 
 The production authority is `consumers`. StoreResolve requests immutable Outlook message IDs, polls only the Inbox in a bounded lookback window, retrieves message/conversation/Internet IDs, sender and recipients, timestamps, headers, and body metadata, and never uses read/unread state as application state. Replies use `POST /me/messages/{id}/reply`, which preserves the original message context. Read operations have bounded retry; a send is never automatically retried.
 
-Email ingestion and acknowledgment have separate D1 switches. Both default off. Provider readiness is configuration-only and never reads mail or sends a reply.
+Email ingestion and acknowledgment have separate D1 switches. Both default off. Runtime readiness refreshes the delegated access token and reads only Inbox folder metadata (`id`, display name, and item counts); it never enumerates messages, reads message bodies, creates ingestion rows, or sends a reply.
 
 ## Microsoft personal-account OAuth setup gate
 
