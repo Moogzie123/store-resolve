@@ -140,8 +140,15 @@ app.get('/api/bootstrap', async (c) => {
     } catch {
       providerReady = false
     }
-  // Readiness is configuration-only. Mailbox access occurs only inside the disabled-by-default poller.
-  const microsoftGraphReady = emailProvider(c.env).ready
+  const graph = emailProvider(c.env)
+  let microsoftGraphReady = false
+  if (graph.ready)
+    try {
+      await graph.verifyConnection()
+      microsoftGraphReady = true
+    } catch {
+      microsoftGraphReady = false
+    }
   const [lastEmailSync, lastBackgroundRun, failures] = await Promise.all([
     c.env.DB.prepare(
       `SELECT completed_at FROM background_job_runs WHERE job_name='OPERATIONS' AND outcome IN ('SUCCESS','PARTIAL') ORDER BY started_at DESC LIMIT 1`,
