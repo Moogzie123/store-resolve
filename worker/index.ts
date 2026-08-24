@@ -337,9 +337,9 @@ app.get('/api/admin/email/pilot-diagnostic', async (c) => {
     }
     if (c.req.header('accept')?.includes('text/html')) {
       const escaped = JSON.stringify(result, null, 2)
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
       return c.html(`<pre>${escaped}</pre>`)
     }
     return c.json(result)
