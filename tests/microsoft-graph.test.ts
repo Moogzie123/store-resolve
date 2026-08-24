@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   maskGraphIdentifier,
   MicrosoftGraphProvider,
+  mailboxIdentityDiagnosticWindows,
   normalizeGraphMessage,
   pilotMessageSelector,
 } from '../worker/microsoft-graph'
@@ -242,6 +243,70 @@ describe('Microsoft Graph delegated mail provider', () => {
     expect(url.pathname).toBe('/v1.0/me/mailFolders/folder%2Fid')
     expect(url.searchParams.get('$select')).toBe('id,displayName')
     expect(String(fetch.mock.calls[1][0])).not.toMatch(/messages|body|recipients|attachments/i)
+  })
+
+  it('runs a date-only all-mailbox diagnostic with no sender or content fields', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(tokenResponse())
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            value: [
+              {
+                id: 'date-message-id',
+                receivedDateTime: '2026-08-01T12:00:00Z',
+                from: { emailAddress: { address: 'sender@example.invalid' } },
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+      )
+    vi.stubGlobal('fetch', fetch)
+    await expect(
+      new MicrosoftGraphProvider(config).runDateOnlyIdentityDiagnostic(),
+    ).resolves.toEqual({
+      records: [
+        {
+          id: 'date-message-id',
+          receivedDateTime: '2026-08-01T12:00:00Z',
+          senderAddress: 'sender@example.invalid',
+        },
+      ],
+      hasMore: false,
+    })
+    const url = new URL(String(fetch.mock.calls[1][0]))
+    expect(url.pathname).toBe('/v1.0/me/messages')
+    expect(url.searchParams.get('$filter')).toBe(
+      `receivedDateTime ge ${mailboxIdentityDiagnosticWindows.dateOnly.receivedStart} and receivedDateTime lt ${mailboxIdentityDiagnosticWindows.dateOnly.receivedEnd}`,
+    )
+    expect(url.searchParams.get('$select')).toBe('id,receivedDateTime,from')
+    expect(url.searchParams.get('$top')).toBe('3')
+    expect(url.searchParams.has('$search')).toBe(false)
+    expect(String(fetch.mock.calls[1][0])).not.toMatch(
+      /subject|body|recipients|attachments|from%2FemailAddress/i,
+    )
+  })
+
+  it('runs a bounded sender-only all-mailbox diagnostic with no content fields', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(tokenResponse())
+      .mockResolvedValueOnce(new Response(JSON.stringify({ value: [] }), { status: 200 }))
+    vi.stubGlobal('fetch', fetch)
+    await expect(
+      new MicrosoftGraphProvider(config).runSenderOnlyIdentityDiagnostic(),
+    ).resolves.toEqual({ records: [], hasMore: false })
+    const url = new URL(String(fetch.mock.calls[1][0]))
+    expect(url.pathname).toBe('/v1.0/me/messages')
+    expect(url.searchParams.get('$filter')).toBe(
+      `receivedDateTime ge ${mailboxIdentityDiagnosticWindows.senderOnly.receivedStart} and receivedDateTime lt ${mailboxIdentityDiagnosticWindows.senderOnly.receivedEnd} and from/emailAddress/address eq '${mailboxIdentityDiagnosticWindows.senderOnly.senderAddress}'`,
+    )
+    expect(url.searchParams.get('$select')).toBe('id,receivedDateTime,from')
+    expect(url.searchParams.get('$top')).toBe('3')
+    expect(url.searchParams.has('$search')).toBe(false)
+    expect(String(fetch.mock.calls[1][0])).not.toMatch(/subject|body|recipients|attachments/i)
   })
 
   it('keeps non-matching subjects as inspected metadata but excludes them as candidates', async () => {

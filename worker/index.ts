@@ -314,33 +314,30 @@ app.get('/api/admin/email/pilot-diagnostic', async (c) => {
     return c.json({ ok: false, ready: false, error: 'MS_GRAPH_NOT_CONFIGURED' }, 503)
   try {
     await graph.verifyConnection()
-    const selection = await graph.findPilotComplaintCandidates()
-    const uniqueCandidate =
-      !selection.hasMore && selection.candidates.length === 1 ? selection.candidates[0] : undefined
-    const folder = uniqueCandidate
-      ? await graph.getMailFolderMetadata(uniqueCandidate.parentFolderId)
-      : undefined
+    const dateOnly = await graph.runDateOnlyIdentityDiagnostic()
+    const senderOnly = await graph.runSenderOnlyIdentityDiagnostic()
+    const serialize = (record: {
+      id: string
+      receivedDateTime: string
+      senderAddress: string
+    }) => ({
+      messageId: maskGraphIdentifier(record.id),
+      receivedDateTime: record.receivedDateTime,
+      sender: maskEmail(record.senderAddress),
+    })
     const result = {
       ok: true,
-      scope: 'ALL_MAILBOX_METADATA_ONLY',
-      rawMetadataCandidateCount: selection.inspectedCandidates.length,
-      hasMoreMetadataCandidates: selection.hasMore,
-      finalCandidateCount: selection.candidates.length,
-      uniquenessEstablished: !selection.hasMore && selection.candidates.length === 1,
-      candidates: selection.inspectedCandidates.map((candidate) => ({
-        messageId: maskGraphIdentifier(candidate.id),
-        conversationId: maskGraphIdentifier(candidate.conversationId),
-        receivedDateTime: candidate.receivedDateTime,
-        senderMatched: candidate.senderMatched,
-        receivedWindowMatched: candidate.receivedWindowMatched,
-        caseIdMatched: candidate.caseIdMatched,
-        subjectPhraseMatched: candidate.subjectPhraseMatched,
-        storeTokenMatched: candidate.storeTokenMatched,
-        folderDisplayName:
-          folder && uniqueCandidate?.id === candidate.id ? folder.displayName : undefined,
-        previousSubjectPrefixMatched: candidate.previousSubjectPrefixMatched,
-        previousWindowMatched: candidate.previousWindowMatched,
-      })),
+      scope: 'MAILBOX_IDENTITY_METADATA_ONLY',
+      dateOnly: {
+        count: dateOnly.records.length,
+        hasMore: dateOnly.hasMore,
+        records: dateOnly.records.map(serialize),
+      },
+      senderOnly: {
+        count: senderOnly.records.length,
+        hasMore: senderOnly.hasMore,
+        records: senderOnly.records.map(serialize),
+      },
     }
     if (c.req.header('accept')?.includes('text/html')) {
       const escaped = JSON.stringify(result, null, 2)

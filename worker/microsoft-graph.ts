@@ -48,6 +48,17 @@ export interface PilotMessageSelection {
   previousWindowMatched: boolean
 }
 
+export interface MailboxIdentityDiagnosticMessage {
+  id: string
+  receivedDateTime: string
+  senderAddress: string
+}
+
+export interface MailboxIdentityDiagnosticResult {
+  records: MailboxIdentityDiagnosticMessage[]
+  hasMore: boolean
+}
+
 export const pilotMessageSelector = {
   senderAddress: 'customerservice@dunkinbrands.com',
   caseId: 'CCC11122413',
@@ -58,6 +69,18 @@ export const pilotMessageSelector = {
   previousSubjectPrefix: 'DBI Case # (CCC11122413) - Guest Contact: Slow Service',
   previousReceivedStart: '2026-08-01T18:25:00.000Z',
   previousReceivedEnd: '2026-08-01T18:30:00.000Z',
+} as const
+
+export const mailboxIdentityDiagnosticWindows = {
+  dateOnly: {
+    receivedStart: '2026-08-01T00:00:00.000Z',
+    receivedEnd: '2026-08-02T00:00:00.000Z',
+  },
+  senderOnly: {
+    senderAddress: 'customerservice@dunkinbrands.com',
+    receivedStart: '2026-07-01T00:00:00.000Z',
+    receivedEnd: '2026-08-25T00:00:00.000Z',
+  },
 } as const
 
 export const isApprovedPilotMessageMetadata = (
@@ -301,6 +324,58 @@ export class MicrosoftGraphProvider implements EmailProvider {
         'Microsoft Graph folder metadata was incomplete',
       )
     return { id: folder.id, displayName: folder.displayName }
+  }
+
+  private async listMailboxIdentityMetadata(
+    receivedStart: string,
+    receivedEnd: string,
+    senderAddress?: string,
+  ): Promise<MailboxIdentityDiagnosticResult> {
+    const filter = [
+      `receivedDateTime ge ${receivedStart}`,
+      `receivedDateTime lt ${receivedEnd}`,
+      ...(senderAddress
+        ? [`from/emailAddress/address eq '${senderAddress.replace(/'/g, "''")}'`]
+        : []),
+    ].join(' and ')
+    const params = new URLSearchParams({
+      $filter: filter,
+      $select: 'id,receivedDateTime,from',
+      $top: '3',
+    })
+    const page = await this.request<{
+      value?: GraphMessage[]
+      '@odata.nextLink'?: string
+    }>(`/me/messages?${params.toString()}`)
+    const records = (page.value ?? []).map((message) => {
+      const sender = message.from?.emailAddress?.address?.trim()
+      if (!message.id || !message.receivedDateTime || !sender)
+        throw new EmailProviderError(
+          'MS_GRAPH_INVALID_IDENTITY_METADATA',
+          'Microsoft Graph identity diagnostic metadata was incomplete',
+        )
+      return {
+        id: message.id,
+        receivedDateTime: message.receivedDateTime,
+        senderAddress: sender,
+      }
+    })
+    return { records, hasMore: Boolean(page['@odata.nextLink']) }
+  }
+
+  async runDateOnlyIdentityDiagnostic(): Promise<MailboxIdentityDiagnosticResult> {
+    return this.listMailboxIdentityMetadata(
+      mailboxIdentityDiagnosticWindows.dateOnly.receivedStart,
+      mailboxIdentityDiagnosticWindows.dateOnly.receivedEnd,
+    )
+  }
+
+  async runSenderOnlyIdentityDiagnostic(): Promise<MailboxIdentityDiagnosticResult> {
+    return this.listMailboxIdentityMetadata(
+      mailboxIdentityDiagnosticWindows.senderOnly.receivedStart,
+      mailboxIdentityDiagnosticWindows.senderOnly.receivedEnd,
+      mailboxIdentityDiagnosticWindows.senderOnly.senderAddress,
+    )
   }
 
   async listMessageIds(lookbackDays: number, maxResults = 25): Promise<string[]> {
