@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MicrosoftGraphProvider, normalizeGraphMessage } from '../worker/microsoft-graph'
-import { pollEmail } from '../worker/ingestion'
+import { ingestSinglePilotComplaint, pollEmail } from '../worker/ingestion'
 import type { D1Database } from '../worker/d1'
 
 const config = {
@@ -105,6 +105,84 @@ describe('Microsoft Graph delegated mail provider', () => {
         emailAckEnabled: false,
       }),
     ).resolves.toEqual({ processed: 0, failures: 0 })
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('selects at most one recent Inbox message with the fixed pilot search', async () => {
+    const now = Date.parse('2026-08-24T06:00:00Z')
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(tokenResponse())
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            value: [{ id: 'pilot-message-id', receivedDateTime: '2026-08-24T05:00:00Z' }],
+          }),
+          { status: 200 },
+        ),
+      )
+    vi.stubGlobal('fetch', fetch)
+    await expect(
+      new MicrosoftGraphProvider(config).findLatestPilotComplaintMessage(7, now),
+    ).resolves.toEqual({
+      id: 'pilot-message-id',
+      receivedDateTime: '2026-08-24T05:00:00Z',
+    })
+    const url = new URL(String(fetch.mock.calls[1][0]))
+    expect(url.pathname).toBe('/v1.0/me/mailFolders/inbox/messages')
+    expect(url.searchParams.get('$search')).toBe('"Dunkin AND complaint"')
+    expect(url.searchParams.get('$select')).toBe('id,receivedDateTime')
+    expect(url.searchParams.get('$top')).toBe('1')
+  })
+
+  it('rejects a pilot selector outside the recent window', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(tokenResponse())
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            value: [{ id: 'old-message-id', receivedDateTime: '2026-08-01T05:00:00Z' }],
+          }),
+          { status: 200 },
+        ),
+      )
+    vi.stubGlobal('fetch', fetch)
+    await expect(
+      new MicrosoftGraphProvider(config).findLatestPilotComplaintMessage(
+        7,
+        Date.parse('2026-08-24T06:00:00Z'),
+      ),
+    ).rejects.toMatchObject({ code: 'MS_GRAPH_PILOT_MESSAGE_OUTSIDE_WINDOW' })
+  })
+
+  it('refuses the one-shot pilot path unless all outbound controls stay off', async () => {
+    const fetch = vi.fn()
+    vi.stubGlobal('fetch', fetch)
+    await expect(
+      ingestSinglePilotComplaint({} as D1Database, new MicrosoftGraphProvider(config), {
+        mode: 'FAMILY_PILOT',
+        externalNotificationsEnabled: true,
+        emailIngestionEnabled: false,
+        emailAckEnabled: false,
+      }),
+    ).rejects.toMatchObject({ code: 'MS_GRAPH_PILOT_SMS_MUST_BE_OFF' })
+    await expect(
+      ingestSinglePilotComplaint({} as D1Database, new MicrosoftGraphProvider(config), {
+        mode: 'FAMILY_PILOT',
+        externalNotificationsEnabled: false,
+        emailIngestionEnabled: false,
+        emailAckEnabled: true,
+      }),
+    ).rejects.toMatchObject({ code: 'MS_GRAPH_PILOT_ACK_MUST_BE_OFF' })
+    await expect(
+      ingestSinglePilotComplaint({} as D1Database, new MicrosoftGraphProvider(config), {
+        mode: 'FAMILY_PILOT',
+        externalNotificationsEnabled: false,
+        emailIngestionEnabled: true,
+        emailAckEnabled: false,
+      }),
+    ).rejects.toMatchObject({ code: 'MS_GRAPH_BROAD_INGESTION_MUST_BE_OFF' })
     expect(fetch).not.toHaveBeenCalled()
   })
 })

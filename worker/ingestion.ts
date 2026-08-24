@@ -4,6 +4,7 @@ import type { D1Database } from './d1'
 import { loadState, persistState } from './d1'
 import type { EmailProvider, NormalizedEmailMessage } from './email-provider'
 import { EmailProviderError } from './email-provider'
+import type { MicrosoftGraphProvider } from './microsoft-graph'
 
 export type EmailProcessingStatus =
   | 'PROCESSED'
@@ -124,6 +125,98 @@ async function recordIntegrationEvent(
       new Date().toISOString(),
     )
     .run()
+}
+
+export async function ingestSinglePilotComplaint(
+  db: D1Database,
+  emailProvider: MicrosoftGraphProvider,
+  config: AppConfig,
+): Promise<{
+  accessed: boolean
+  status?: EmailProcessingStatus
+  complaintId?: string
+  messageId?: string
+  conversationId?: string
+}> {
+  if (config.mode !== 'FAMILY_PILOT')
+    throw new EmailProviderError(
+      'MS_GRAPH_PILOT_MODE_REQUIRED',
+      'Controlled mail ingestion requires FAMILY_PILOT mode',
+    )
+  if (config.externalNotificationsEnabled)
+    throw new EmailProviderError(
+      'MS_GRAPH_PILOT_SMS_MUST_BE_OFF',
+      'External notifications must remain disabled',
+    )
+  if (config.emailAckEnabled)
+    throw new EmailProviderError(
+      'MS_GRAPH_PILOT_ACK_MUST_BE_OFF',
+      'Email acknowledgments must remain disabled',
+    )
+  if (config.emailIngestionEnabled)
+    throw new EmailProviderError(
+      'MS_GRAPH_BROAD_INGESTION_MUST_BE_OFF',
+      'Scheduled email ingestion must remain disabled during the controlled test',
+    )
+  if (!emailProvider.ready)
+    throw new EmailProviderError('MS_GRAPH_NOT_CONFIGURED', 'Microsoft Graph is not configured')
+
+  const attemptId = crypto.randomUUID()
+  const startedAt = new Date().toISOString()
+  await db
+    .prepare(
+      `INSERT OR IGNORE INTO background_job_locks(job_name,locked_until,owner_run_id,updated_at) VALUES('EMAIL_PILOT','1970-01-01T00:00:00.000Z','',?)`,
+    )
+    .bind(startedAt)
+    .run()
+  const claimed = await db
+    .prepare(
+      `UPDATE background_job_locks SET locked_until='9999-12-31T23:59:59.999Z',owner_run_id=?,updated_at=? WHERE job_name='EMAIL_PILOT' AND locked_until<=?`,
+    )
+    .bind(attemptId, startedAt, startedAt)
+    .run()
+  if (Number(claimed.meta?.changes ?? 0) !== 1)
+    throw new EmailProviderError(
+      'MS_GRAPH_PILOT_ALREADY_ATTEMPTED',
+      'The controlled mail-ingestion attempt has already been used',
+    )
+  await recordIntegrationEvent(db, 'PILOT_INGESTION_ATTEMPT_STARTED', attemptId, 'SUCCESS')
+
+  await emailProvider.verifyConnection()
+  const selected = await emailProvider.findLatestPilotComplaintMessage(7)
+  if (!selected) return { accessed: false }
+  const message = await emailProvider.getMessage(selected.id)
+  if (
+    message.id !== selected.id ||
+    Date.parse(message.internalDate) !== Date.parse(selected.receivedDateTime)
+  )
+    throw new EmailProviderError(
+      'MS_GRAPH_PILOT_IDENTITY_MISMATCH',
+      'Microsoft Graph pilot message identity did not match the selected record',
+    )
+  const extraction = extractComplaint(message)
+  if (!/\bdunkin\b/i.test(`${message.subject}\n${message.textBody}`) || !extraction.isComplaint)
+    throw new EmailProviderError(
+      'MS_GRAPH_PILOT_NOT_COMPLAINT',
+      'The selected message did not satisfy the controlled complaint checks',
+    )
+
+  await recordIntegrationEvent(db, 'PILOT_MESSAGE_SELECTED', message.id, 'SUCCESS')
+  const result = await ingestEmailMessage(db, message)
+  await recordIntegrationEvent(
+    db,
+    'PILOT_INGESTION_COMPLETED',
+    message.id,
+    'SUCCESS',
+    result.status,
+  )
+  return {
+    accessed: true,
+    status: result.status,
+    complaintId: result.complaintId,
+    messageId: message.id,
+    conversationId: message.threadId,
+  }
 }
 
 export async function ingestEmailMessage(

@@ -31,6 +31,11 @@ export interface GraphMessage {
   internetMessageHeaders?: Array<{ name?: string; value?: string }>
 }
 
+export interface PilotMessageSelection {
+  id: string
+  receivedDateTime: string
+}
+
 const GRAPH_ROOT = 'https://graph.microsoft.com/v1.0'
 const GRAPH_SCOPES = [
   'offline_access',
@@ -180,6 +185,35 @@ export class MicrosoftGraphProvider implements EmailProvider {
         'MS_GRAPH_MAILBOX_MISMATCH',
         'Signed-in Microsoft mailbox does not match configuration',
       )
+  }
+
+  async findLatestPilotComplaintMessage(
+    maxAgeDays = 7,
+    now = Date.now(),
+  ): Promise<PilotMessageSelection | undefined> {
+    const params = new URLSearchParams({
+      $search: '"Dunkin AND complaint"',
+      $select: 'id,receivedDateTime',
+      $top: '1',
+    })
+    const page = await this.request<{ value?: Array<{ id?: string; receivedDateTime?: string }> }>(
+      `/me/mailFolders/inbox/messages?${params.toString()}`,
+    )
+    const candidate = page.value?.[0]
+    if (!candidate) return undefined
+    if (!candidate.id || !candidate.receivedDateTime)
+      throw new EmailProviderError(
+        'MS_GRAPH_PILOT_INVALID_SELECTION',
+        'Microsoft Graph pilot selection is incomplete',
+      )
+    const receivedAt = Date.parse(candidate.receivedDateTime)
+    const cutoff = now - Math.max(1, Math.min(maxAgeDays, 30)) * 86_400_000
+    if (!Number.isFinite(receivedAt) || receivedAt < cutoff || receivedAt > now + 300_000)
+      throw new EmailProviderError(
+        'MS_GRAPH_PILOT_MESSAGE_OUTSIDE_WINDOW',
+        'Microsoft Graph pilot selection is outside the approved recent window',
+      )
+    return { id: candidate.id, receivedDateTime: candidate.receivedDateTime }
   }
 
   async listMessageIds(lookbackDays: number, maxResults = 25): Promise<string[]> {

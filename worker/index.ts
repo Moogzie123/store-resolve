@@ -19,6 +19,8 @@ import { loadState, persistState, type D1Database } from './d1'
 import { SignalWireSmsProvider } from './providers'
 import { applySignalWireCallback, reconcileSignalWireMessage } from './callbacks'
 import { MicrosoftGraphProvider } from './microsoft-graph'
+import { EmailProviderError } from './email-provider'
+import { ingestSinglePilotComplaint } from './ingestion'
 import { runScheduledOperations } from './operations'
 import { buildReport } from './reporting'
 
@@ -259,6 +261,19 @@ app.put('/api/admin/config', zValidator('json', configSchema), async (c) => {
   await persistState(c.env.DB, state)
   await auditAdminChange(c.env.DB, 'SETTINGS_CHANGED', 'operational-settings', user.id)
   return c.json(publicState(await loadState(c.env.DB), user))
+})
+
+app.post('/api/admin/email/pilot-ingest', async (c) => {
+  const user = c.get('user')
+  if (!canAdmin(user)) return c.json(jsonError('Owner access required'), 403)
+  const state = await loadState(c.env.DB)
+  try {
+    const result = await ingestSinglePilotComplaint(c.env.DB, emailProvider(c.env), state.config)
+    return c.json({ ok: true, ...result })
+  } catch (error) {
+    const code = error instanceof EmailProviderError ? error.code : 'MS_GRAPH_PILOT_FAILED'
+    return c.json(jsonError(code), 409)
+  }
 })
 
 app.get('/api/admin/reporting', async (c) => {
