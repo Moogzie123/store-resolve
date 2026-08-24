@@ -344,6 +344,12 @@ app.get('/api/admin/email/pilot-diagnostic', async (c) => {
   }
 })
 
+app.get('/diagnostics/pilot-mail', (c) => {
+  const url = new URL(c.req.url)
+  url.pathname = '/api/admin/email/pilot-diagnostic'
+  return app.fetch(new Request(url, { headers: c.req.raw.headers }), c.env)
+})
+
 app.get('/api/admin/reporting', async (c) => {
   const user = c.get('user')
   if (!canAdmin(user)) return c.json(jsonError('Owner access required'), 403)
