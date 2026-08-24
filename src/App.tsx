@@ -336,6 +336,21 @@ export default function App() {
                   show((error as Error).message)
                 }
               }}
+              onPilotIngest={async () => {
+                try {
+                  const result = await api.ingestPilotEmail()
+                  const refreshed = await api.bootstrap()
+                  setState(refreshed.state)
+                  setProviderReady(refreshed.providerReady)
+                  show(
+                    result.accessed
+                      ? `One-shot mail ingestion ${result.status?.toLowerCase() ?? 'completed'}`
+                      : 'No recent matching complaint was found',
+                  )
+                } catch (error) {
+                  show((error as Error).message)
+                }
+              }}
             />
           )}
         </div>
@@ -1379,6 +1394,7 @@ function PilotControls({
   onSaveConfig,
   onSendTest,
   onReconcile,
+  onPilotIngest,
 }: {
   state: AppState
   setState: (s: AppState) => void
@@ -1388,6 +1404,7 @@ function PilotControls({
   onSaveConfig: (config: AppState['config']) => void
   onSendTest: (id: 'father' | 'uncle' | 'grandfather' | 'pilot-admin') => void
   onReconcile: (providerMessageId: string) => void
+  onPilotIngest: () => void
 }) {
   const owners = state.users.filter((u) => ['father', 'uncle', 'grandfather'].includes(u.id))
   const pilotAdmin = state.users.find((u) => u.recipientKind === 'PILOT_ADMIN')
@@ -1541,6 +1558,23 @@ function PilotControls({
               }
             />
           </label>
+          <button
+            className="secondary"
+            disabled={
+              !health?.microsoftGraphReady ||
+              state.config.mode !== 'FAMILY_PILOT' ||
+              state.config.externalNotificationsEnabled ||
+              Boolean(state.config.emailIngestionEnabled) ||
+              Boolean(state.config.emailAckEnabled)
+            }
+            onClick={onPilotIngest}
+          >
+            Ingest one recent Dunkin complaint
+          </button>
+          <small>
+            One-shot pilot: Inbox search is fixed to Dunkin + complaint, limited to one recent
+            message, and cannot be retried automatically.
+          </small>
         </section>
         <section className="panel settings-card">
           <h2>SLA and background processing</h2>

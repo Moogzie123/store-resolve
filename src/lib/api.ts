@@ -27,6 +27,14 @@ const reconciliationSchema = z.object({
   result: z.enum(['UPDATED', 'UNCHANGED']),
   providerStatus: z.enum(['DELIVERED', 'FAILED', 'UNDELIVERED']),
 })
+const pilotEmailSchema = z.object({
+  ok: z.literal(true),
+  accessed: z.boolean(),
+  status: z.enum(['PROCESSED', 'ROUTING_REVIEW', 'DUPLICATE', 'FOLLOW_UP']).optional(),
+  complaintId: z.string().optional(),
+  messageId: z.string().optional(),
+  conversationId: z.string().optional(),
+})
 export const api = {
   bootstrap: () => request('/bootstrap', bootstrapSchema),
   createComplaint: (input: NewComplaint) =>
@@ -70,6 +78,11 @@ export const api = {
     request('/admin/signalwire/reconcile', reconciliationSchema, {
       method: 'POST',
       body: JSON.stringify({ providerMessageId }),
+    }),
+  ingestPilotEmail: () =>
+    request('/admin/email/pilot-ingest', pilotEmailSchema, {
+      method: 'POST',
+      body: JSON.stringify({}),
     }),
   updateStore: (id: string, store: Store) =>
     request(`/admin/stores/${encodeURIComponent(id)}`, stateSchema, {
