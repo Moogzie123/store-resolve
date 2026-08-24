@@ -16,7 +16,7 @@ The Compatibility Create Message request is form encoded with `To`, `From`, `Bod
 
 ## Microsoft Graph mail
 
-Microsoft Graph is the only active production mail provider. It uses delegated authorization-code OAuth with PKCE and refresh-token support for a personal Microsoft account. Credentials and mailbox identity exist only in Worker secrets:
+Microsoft Graph is the only active production mail provider. Its one-time bootstrap uses Microsoft Device Code Flow with the `consumers` authority; production access continues through the stored delegated refresh token. Credentials and mailbox identity exist only in Worker secrets:
 
 ```bash
 npx wrangler secret put MS_CLIENT_ID
@@ -44,9 +44,9 @@ In Microsoft Entra admin center:
 1. Open **Identity -> Applications -> App registrations -> New registration**.
 2. Name it `StoreResolve Production Mail`.
 3. For **Supported account types**, select **Personal Microsoft accounts only** (`PersonalMicrosoftAccount`).
-4. Register the app, then open **Authentication -> Add a platform -> Mobile and desktop applications**.
-5. Select the native redirect URI `http://localhost` and enable public client flows.
+4. Register the app, then open **Authentication**.
+5. Under **Advanced settings**, set **Allow public client flows** to **Yes**. Device Code Flow does not use a redirect URI or local callback server.
 6. Open **API permissions -> Add a permission -> Microsoft Graph -> Delegated permissions**. Add only `Mail.Read` and `Mail.Send`; `offline_access` is requested by the OAuth flow.
-7. In the repository terminal, set `MS_CLIENT_ID` only for that process and run `pnpm oauth:microsoft`. Sign in to the MSN mailbox and consent. The helper uses PKCE and writes the refresh token directly to Cloudflare through Wrangler without displaying it.
+7. Run `pnpm oauth:microsoft`, enter the existing Application client ID if prompted, then visit the displayed Microsoft device-login URL and enter its short code. The helper polls Microsoft server-side and writes the refresh token directly to Cloudflare through Wrangler without displaying it.
 
-No client secret is required for this public-client PKCE flow. Refresh/access tokens and the mailbox address must never be pasted into chat, committed, or logged. The dormant Gmail adapter has no production binding or readiness path.
+No client secret is required for this public-client device flow. Refresh/access tokens and the mailbox address must never be pasted into chat, committed, or logged. The dormant Gmail adapter has no production binding or readiness path.
