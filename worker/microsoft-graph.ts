@@ -34,18 +34,43 @@ export interface GraphMessage {
 export interface PilotMessageSelection {
   id: string
   conversationId: string
-  internetMessageId?: string
   receivedDateTime: string
   subject: string
   senderAddress: string
+  senderMatched: boolean
+  receivedWindowMatched: boolean
+  caseIdMatched: boolean
+  subjectPhraseMatched: boolean
+  storeTokenMatched: boolean
+  previousSubjectPrefixMatched: boolean
+  previousWindowMatched: boolean
 }
 
 export const pilotMessageSelector = {
   senderAddress: 'customerservice@dunkinbrands.com',
-  subjectPrefix: 'DBI Case # (CCC11122413) - Guest Contact: Slow Service',
-  receivedStart: '2026-08-01T18:25:00.000Z',
-  receivedEnd: '2026-08-01T18:30:00.000Z',
+  caseId: 'CCC11122413',
+  subjectPhrase: 'Slow Service',
+  storeToken: '350909-DD',
+  receivedStart: '2026-08-01T18:20:00.000Z',
+  receivedEnd: '2026-08-01T18:35:00.000Z',
+  previousSubjectPrefix: 'DBI Case # (CCC11122413) - Guest Contact: Slow Service',
+  previousReceivedStart: '2026-08-01T18:25:00.000Z',
+  previousReceivedEnd: '2026-08-01T18:30:00.000Z',
 } as const
+
+export const isApprovedPilotMessageMetadata = (
+  message: Pick<
+    PilotMessageSelection,
+    'senderMatched' | 'receivedWindowMatched' | 'caseIdMatched' | 'subjectPhraseMatched'
+  >,
+) =>
+  message.senderMatched &&
+  message.receivedWindowMatched &&
+  message.caseIdMatched &&
+  message.subjectPhraseMatched
+
+export const maskGraphIdentifier = (value: string) =>
+  value.length <= 8 ? '••••' : `${value.slice(0, 4)}…${value.slice(-4)}`
 
 const GRAPH_ROOT = 'https://graph.microsoft.com/v1.0'
 const GRAPH_SCOPES = [
@@ -202,24 +227,23 @@ export class MicrosoftGraphProvider implements EmailProvider {
 
   async findPilotComplaintCandidates(): Promise<{
     candidates: PilotMessageSelection[]
+    inspectedCandidates: PilotMessageSelection[]
     hasMore: boolean
   }> {
-    const escapedSubject = pilotMessageSelector.subjectPrefix.replace(/'/g, "''")
     const params = new URLSearchParams({
       $filter: [
         `receivedDateTime ge ${pilotMessageSelector.receivedStart}`,
         `receivedDateTime le ${pilotMessageSelector.receivedEnd}`,
         `from/emailAddress/address eq '${pilotMessageSelector.senderAddress}'`,
-        `startswith(subject,'${escapedSubject}')`,
       ].join(' and '),
-      $select: 'id,conversationId,internetMessageId,receivedDateTime,subject,from',
-      $top: '2',
+      $select: 'id,conversationId,subject,receivedDateTime,from',
+      $top: '3',
     })
     const page = await this.request<{
       value?: GraphMessage[]
       '@odata.nextLink'?: string
     }>(`/me/mailFolders/inbox/messages?${params.toString()}`)
-    const candidates = (page.value ?? []).map((candidate) => {
+    const inspectedCandidates = (page.value ?? []).map((candidate) => {
       const senderAddress = candidate.from?.emailAddress?.address?.trim() ?? ''
       const receivedAt = Date.parse(candidate.receivedDateTime ?? '')
       if (
@@ -227,26 +251,40 @@ export class MicrosoftGraphProvider implements EmailProvider {
         !candidate.conversationId ||
         !candidate.receivedDateTime ||
         !candidate.subject ||
-        senderAddress.toLowerCase() !== pilotMessageSelector.senderAddress ||
-        !candidate.subject.startsWith(pilotMessageSelector.subjectPrefix) ||
-        !Number.isFinite(receivedAt) ||
-        receivedAt < Date.parse(pilotMessageSelector.receivedStart) ||
-        receivedAt > Date.parse(pilotMessageSelector.receivedEnd)
+        !Number.isFinite(receivedAt)
       )
         throw new EmailProviderError(
           'MS_GRAPH_PILOT_INVALID_SELECTION',
-          'Microsoft Graph pilot metadata did not satisfy every approved selector',
+          'Microsoft Graph pilot metadata was incomplete',
         )
+      const normalizedSubject = candidate.subject.toLowerCase()
       return {
         id: candidate.id,
         conversationId: candidate.conversationId,
-        internetMessageId: candidate.internetMessageId,
         receivedDateTime: candidate.receivedDateTime,
         subject: candidate.subject,
         senderAddress,
+        senderMatched: senderAddress.toLowerCase() === pilotMessageSelector.senderAddress,
+        receivedWindowMatched:
+          receivedAt >= Date.parse(pilotMessageSelector.receivedStart) &&
+          receivedAt <= Date.parse(pilotMessageSelector.receivedEnd),
+        caseIdMatched: normalizedSubject.includes(pilotMessageSelector.caseId.toLowerCase()),
+        subjectPhraseMatched: normalizedSubject.includes(
+          pilotMessageSelector.subjectPhrase.toLowerCase(),
+        ),
+        storeTokenMatched: normalizedSubject.includes(
+          pilotMessageSelector.storeToken.toLowerCase(),
+        ),
+        previousSubjectPrefixMatched: candidate.subject.startsWith(
+          pilotMessageSelector.previousSubjectPrefix,
+        ),
+        previousWindowMatched:
+          receivedAt >= Date.parse(pilotMessageSelector.previousReceivedStart) &&
+          receivedAt <= Date.parse(pilotMessageSelector.previousReceivedEnd),
       }
     })
-    return { candidates, hasMore: Boolean(page['@odata.nextLink']) }
+    const candidates = inspectedCandidates.filter(isApprovedPilotMessageMetadata)
+    return { candidates, inspectedCandidates, hasMore: Boolean(page['@odata.nextLink']) }
   }
 
   async listMessageIds(lookbackDays: number, maxResults = 25): Promise<string[]> {

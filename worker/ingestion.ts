@@ -4,7 +4,11 @@ import type { D1Database } from './d1'
 import { loadState, persistState } from './d1'
 import type { EmailProvider, NormalizedEmailMessage } from './email-provider'
 import { EmailProviderError } from './email-provider'
-import { pilotMessageSelector, type MicrosoftGraphProvider } from './microsoft-graph'
+import {
+  isApprovedPilotMessageMetadata,
+  pilotMessageSelector,
+  type MicrosoftGraphProvider,
+} from './microsoft-graph'
 
 export type EmailProcessingStatus =
   | 'PROCESSED'
@@ -199,15 +203,24 @@ export async function ingestSinglePilotComplaint(
     message.sender.trim().toLowerCase() === pilotMessageSelector.senderAddress ||
     message.sender.toLowerCase().endsWith(`<${pilotMessageSelector.senderAddress}>`)
   const receivedAt = Date.parse(message.internalDate)
+  const approvedMetadata = {
+    senderMatched: senderMatches,
+    receivedWindowMatched:
+      Number.isFinite(receivedAt) &&
+      receivedAt >= Date.parse(pilotMessageSelector.receivedStart) &&
+      receivedAt <= Date.parse(pilotMessageSelector.receivedEnd),
+    caseIdMatched: message.subject
+      .toLowerCase()
+      .includes(pilotMessageSelector.caseId.toLowerCase()),
+    subjectPhraseMatched: message.subject
+      .toLowerCase()
+      .includes(pilotMessageSelector.subjectPhrase.toLowerCase()),
+  }
   if (
     message.id !== selected.id ||
     message.threadId !== selected.conversationId ||
     Date.parse(message.internalDate) !== Date.parse(selected.receivedDateTime) ||
-    !senderMatches ||
-    !message.subject.startsWith(pilotMessageSelector.subjectPrefix) ||
-    !Number.isFinite(receivedAt) ||
-    receivedAt < Date.parse(pilotMessageSelector.receivedStart) ||
-    receivedAt > Date.parse(pilotMessageSelector.receivedEnd)
+    !isApprovedPilotMessageMetadata(approvedMetadata)
   )
     throw new EmailProviderError(
       'MS_GRAPH_PILOT_IDENTITY_MISMATCH',

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  maskGraphIdentifier,
   MicrosoftGraphProvider,
   normalizeGraphMessage,
   pilotMessageSelector,
@@ -148,7 +149,8 @@ describe('Microsoft Graph delegated mail provider', () => {
     expect(fetch).not.toHaveBeenCalled()
   })
 
-  it('uses every approved selector in an Inbox-only metadata query capped at two', async () => {
+  it('uses an Inbox-only sender/time metadata query and validates subject locally', async () => {
+    const subject = 'DBI Case # (CCC11122413) - Guest Contact: Slow Service - Store 350909-DD'
     const fetch = vi
       .fn()
       .mockResolvedValueOnce(tokenResponse())
@@ -159,9 +161,8 @@ describe('Microsoft Graph delegated mail provider', () => {
               {
                 id: 'pilot-message-id',
                 conversationId: 'pilot-conversation-id',
-                internetMessageId: '<pilot@example.invalid>',
                 receivedDateTime: '2026-08-01T18:27:00Z',
-                subject: pilotMessageSelector.subjectPrefix,
+                subject,
                 from: { emailAddress: { address: pilotMessageSelector.senderAddress } },
               },
             ],
@@ -177,10 +178,32 @@ describe('Microsoft Graph delegated mail provider', () => {
         {
           id: 'pilot-message-id',
           conversationId: 'pilot-conversation-id',
-          internetMessageId: '<pilot@example.invalid>',
           receivedDateTime: '2026-08-01T18:27:00Z',
-          subject: pilotMessageSelector.subjectPrefix,
+          subject,
           senderAddress: pilotMessageSelector.senderAddress,
+          senderMatched: true,
+          receivedWindowMatched: true,
+          caseIdMatched: true,
+          subjectPhraseMatched: true,
+          storeTokenMatched: true,
+          previousSubjectPrefixMatched: true,
+          previousWindowMatched: true,
+        },
+      ],
+      inspectedCandidates: [
+        {
+          id: 'pilot-message-id',
+          conversationId: 'pilot-conversation-id',
+          receivedDateTime: '2026-08-01T18:27:00Z',
+          subject,
+          senderAddress: pilotMessageSelector.senderAddress,
+          senderMatched: true,
+          receivedWindowMatched: true,
+          caseIdMatched: true,
+          subjectPhraseMatched: true,
+          storeTokenMatched: true,
+          previousSubjectPrefixMatched: true,
+          previousWindowMatched: true,
         },
       ],
       hasMore: false,
@@ -189,13 +212,50 @@ describe('Microsoft Graph delegated mail provider', () => {
     expect(url.pathname).toBe('/v1.0/me/mailFolders/inbox/messages')
     const filter = url.searchParams.get('$filter') ?? ''
     expect(filter).toContain(`from/emailAddress/address eq '${pilotMessageSelector.senderAddress}'`)
-    expect(filter).toContain(`startswith(subject,'${pilotMessageSelector.subjectPrefix}')`)
+    expect(filter).not.toContain('subject')
     expect(filter).toContain(`receivedDateTime ge ${pilotMessageSelector.receivedStart}`)
     expect(filter).toContain(`receivedDateTime le ${pilotMessageSelector.receivedEnd}`)
-    expect(url.searchParams.get('$select')).toBe(
-      'id,conversationId,internetMessageId,receivedDateTime,subject,from',
-    )
-    expect(url.searchParams.get('$top')).toBe('2')
+    expect(url.searchParams.get('$select')).toBe('id,conversationId,subject,receivedDateTime,from')
+    expect(url.searchParams.get('$top')).toBe('3')
+    expect(url.searchParams.has('$search')).toBe(false)
+  })
+
+  it('keeps non-matching subjects as inspected metadata but excludes them as candidates', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(tokenResponse())
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            value: [
+              {
+                id: 'other-message-id',
+                conversationId: 'other-conversation-id',
+                receivedDateTime: '2026-08-01T18:27:00Z',
+                subject: 'Unrelated metadata subject',
+                from: { emailAddress: { address: pilotMessageSelector.senderAddress } },
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+      )
+    vi.stubGlobal('fetch', fetch)
+    const result = await new MicrosoftGraphProvider(config).findPilotComplaintCandidates()
+    expect(result.candidates).toHaveLength(0)
+    expect(result.inspectedCandidates).toHaveLength(1)
+    expect(result.inspectedCandidates[0]).toMatchObject({
+      senderMatched: true,
+      receivedWindowMatched: true,
+      caseIdMatched: false,
+      subjectPhraseMatched: false,
+    })
+    expect(fetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('masks Graph identifiers in diagnostic output', () => {
+    expect(maskGraphIdentifier('0123456789abcdef')).toBe('0123…cdef')
+    expect(maskGraphIdentifier('short')).toBe('••••')
   })
 
   it.each([
@@ -206,14 +266,14 @@ describe('Microsoft Graph delegated mail provider', () => {
           id: 'pilot-message-1',
           conversationId: 'conversation-1',
           receivedDateTime: '2026-08-01T18:26:00Z',
-          subject: pilotMessageSelector.subjectPrefix,
+          subject: `${pilotMessageSelector.caseId} ${pilotMessageSelector.subjectPhrase}`,
           from: { emailAddress: { address: pilotMessageSelector.senderAddress } },
         },
         {
           id: 'pilot-message-2',
           conversationId: 'conversation-2',
           receivedDateTime: '2026-08-01T18:27:00Z',
-          subject: pilotMessageSelector.subjectPrefix,
+          subject: `${pilotMessageSelector.caseId} ${pilotMessageSelector.subjectPhrase}`,
           from: { emailAddress: { address: pilotMessageSelector.senderAddress } },
         },
       ],
@@ -253,7 +313,7 @@ describe('Microsoft Graph delegated mail provider', () => {
       id: 'pilot-message-id',
       conversationId: 'pilot-conversation-id',
       receivedDateTime: '2026-08-01T18:27:00Z',
-      subject: pilotMessageSelector.subjectPrefix,
+      subject: `${pilotMessageSelector.caseId} ${pilotMessageSelector.subjectPhrase}`,
       from: { emailAddress: { address: pilotMessageSelector.senderAddress } },
     }
     const fetch = vi

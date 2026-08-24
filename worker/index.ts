@@ -18,7 +18,7 @@ import { authenticate, canAdmin, canViewComplaint, maskEmail, maskPhone } from '
 import { loadState, persistState, type D1Database } from './d1'
 import { SignalWireSmsProvider } from './providers'
 import { applySignalWireCallback, reconcileSignalWireMessage } from './callbacks'
-import { MicrosoftGraphProvider } from './microsoft-graph'
+import { maskGraphIdentifier, MicrosoftGraphProvider } from './microsoft-graph'
 import { EmailProviderError } from './email-provider'
 import { ingestSinglePilotComplaint } from './ingestion'
 import { runScheduledOperations } from './operations'
@@ -295,6 +295,49 @@ app.get('/api/admin/email/readiness', async (c) => {
   } catch (error) {
     const code = error instanceof EmailProviderError ? error.code : 'MS_GRAPH_READINESS_FAILED'
     return c.json({ ok: false, ready: false, error: code }, 503)
+  }
+})
+
+app.get('/api/admin/email/pilot-diagnostic', async (c) => {
+  const user = c.get('user')
+  if (!canAdmin(user)) return c.json(jsonError('Owner access required'), 403)
+  const state = await loadState(c.env.DB)
+  if (
+    state.config.mode !== 'FAMILY_PILOT' ||
+    state.config.externalNotificationsEnabled ||
+    state.config.emailIngestionEnabled ||
+    state.config.emailAckEnabled
+  )
+    return c.json(jsonError('Production safety controls must remain locked down'), 409)
+  const graph = emailProvider(c.env)
+  if (!graph.ready)
+    return c.json({ ok: false, ready: false, error: 'MS_GRAPH_NOT_CONFIGURED' }, 503)
+  try {
+    await graph.verifyConnection()
+    const selection = await graph.findPilotComplaintCandidates()
+    return c.json({
+      ok: true,
+      scope: 'INBOX_METADATA_ONLY',
+      rawMetadataCandidateCount: selection.inspectedCandidates.length,
+      hasMoreMetadataCandidates: selection.hasMore,
+      finalCandidateCount: selection.candidates.length,
+      uniquenessEstablished: !selection.hasMore && selection.candidates.length === 1,
+      candidates: selection.inspectedCandidates.map((candidate) => ({
+        messageId: maskGraphIdentifier(candidate.id),
+        conversationId: maskGraphIdentifier(candidate.conversationId),
+        receivedDateTime: candidate.receivedDateTime,
+        senderMatched: candidate.senderMatched,
+        receivedWindowMatched: candidate.receivedWindowMatched,
+        caseIdMatched: candidate.caseIdMatched,
+        subjectPhraseMatched: candidate.subjectPhraseMatched,
+        storeTokenMatched: candidate.storeTokenMatched,
+        previousSubjectPrefixMatched: candidate.previousSubjectPrefixMatched,
+        previousWindowMatched: candidate.previousWindowMatched,
+      })),
+    })
+  } catch (error) {
+    const code = error instanceof EmailProviderError ? error.code : 'MS_GRAPH_DIAGNOSTIC_FAILED'
+    return c.json({ ok: false, error: code }, 503)
   }
 })
 
