@@ -245,6 +245,40 @@ describe('Microsoft Graph delegated mail provider', () => {
     expect(String(fetch.mock.calls[1][0])).not.toMatch(/messages|body|recipients|attachments/i)
   })
 
+  it('requires the approved PC/store token before metadata can become a pilot candidate', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(tokenResponse())
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            value: [
+              {
+                id: 'pilot-message-id',
+                conversationId: 'pilot-conversation-id',
+                parentFolderId: 'archive-folder-id',
+                receivedDateTime: '2026-08-01T18:27:00Z',
+                subject: `${pilotMessageSelector.caseId} ${pilotMessageSelector.subjectPhrase}`,
+                from: { emailAddress: { address: pilotMessageSelector.senderAddress } },
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+      )
+    vi.stubGlobal('fetch', fetch)
+    const result = await new MicrosoftGraphProvider(config).findPilotComplaintCandidates()
+    expect(result.candidates).toHaveLength(0)
+    expect(result.inspectedCandidates).toHaveLength(1)
+    expect(result.inspectedCandidates[0]).toMatchObject({
+      senderMatched: true,
+      receivedWindowMatched: true,
+      caseIdMatched: true,
+      subjectPhraseMatched: true,
+      storeTokenMatched: false,
+    })
+  })
+
   it('runs a date-only all-mailbox diagnostic with no sender or content fields', async () => {
     const fetch = vi
       .fn()
@@ -357,7 +391,7 @@ describe('Microsoft Graph delegated mail provider', () => {
           conversationId: 'conversation-1',
           parentFolderId: 'archive-folder-id',
           receivedDateTime: '2026-08-01T18:26:00Z',
-          subject: `${pilotMessageSelector.caseId} ${pilotMessageSelector.subjectPhrase}`,
+          subject: `${pilotMessageSelector.caseId} ${pilotMessageSelector.subjectPhrase} ${pilotMessageSelector.storeToken}`,
           from: { emailAddress: { address: pilotMessageSelector.senderAddress } },
         },
         {
@@ -365,7 +399,7 @@ describe('Microsoft Graph delegated mail provider', () => {
           conversationId: 'conversation-2',
           parentFolderId: 'archive-folder-id',
           receivedDateTime: '2026-08-01T18:27:00Z',
-          subject: `${pilotMessageSelector.caseId} ${pilotMessageSelector.subjectPhrase}`,
+          subject: `${pilotMessageSelector.caseId} ${pilotMessageSelector.subjectPhrase} ${pilotMessageSelector.storeToken}`,
           from: { emailAddress: { address: pilotMessageSelector.senderAddress } },
         },
       ],
@@ -392,7 +426,7 @@ describe('Microsoft Graph delegated mail provider', () => {
           emailIngestionEnabled: false,
           emailAckEnabled: false,
         }),
-      ).resolves.toEqual({ accessed: false, matchCount })
+      ).resolves.toEqual({ accessed: false, matchCount, inspectedCount: value.length })
       expect(fetch).toHaveBeenCalledTimes(4)
       expect(fetch.mock.calls.map(([url]) => String(url))).not.toEqual(
         expect.arrayContaining([expect.stringMatching(/\/me\/messages\//)]),
@@ -406,7 +440,7 @@ describe('Microsoft Graph delegated mail provider', () => {
       conversationId: 'pilot-conversation-id',
       parentFolderId: 'archive-folder-id',
       receivedDateTime: '2026-08-01T18:27:00Z',
-      subject: `${pilotMessageSelector.caseId} ${pilotMessageSelector.subjectPhrase}`,
+      subject: `${pilotMessageSelector.caseId} ${pilotMessageSelector.subjectPhrase} ${pilotMessageSelector.storeToken}`,
       from: { emailAddress: { address: pilotMessageSelector.senderAddress } },
     }
     const fetch = vi

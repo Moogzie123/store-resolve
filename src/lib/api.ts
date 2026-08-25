@@ -35,6 +35,7 @@ const pilotEmailSchema = z.object({
   messageId: z.string().optional(),
   conversationId: z.string().optional(),
   matchCount: z.union([z.literal(0), z.literal(1), z.literal('2+')]).optional(),
+  inspectedCount: z.number().int().min(0).max(3).optional(),
 })
 export const api = {
   bootstrap: () => request('/bootstrap', bootstrapSchema),

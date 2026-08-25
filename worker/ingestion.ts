@@ -142,6 +142,7 @@ export async function ingestSinglePilotComplaint(
   messageId?: string
   conversationId?: string
   matchCount?: 0 | 1 | '2+'
+  inspectedCount?: number
 }> {
   if (config.mode !== 'FAMILY_PILOT')
     throw new EmailProviderError(
@@ -174,7 +175,8 @@ export async function ingestSinglePilotComplaint(
       : selection.candidates.length === 1
         ? 1
         : 0
-  if (matchCount !== 1) return { accessed: false, matchCount }
+  const inspectedCount = selection.inspectedCandidates.length
+  if (matchCount !== 1) return { accessed: false, matchCount, inspectedCount }
 
   const selected = selection.candidates[0]
   if (!selected)
@@ -215,6 +217,9 @@ export async function ingestSinglePilotComplaint(
     subjectPhraseMatched: message.subject
       .toLowerCase()
       .includes(pilotMessageSelector.subjectPhrase.toLowerCase()),
+    storeTokenMatched: message.subject
+      .toLowerCase()
+      .includes(pilotMessageSelector.storeToken.toLowerCase()),
   }
   if (
     message.id !== selected.id ||
@@ -249,6 +254,7 @@ export async function ingestSinglePilotComplaint(
     messageId: message.id,
     conversationId: message.threadId,
     matchCount,
+    inspectedCount,
   }
 }
 

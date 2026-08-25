@@ -86,13 +86,18 @@ export const mailboxIdentityDiagnosticWindows = {
 export const isApprovedPilotMessageMetadata = (
   message: Pick<
     PilotMessageSelection,
-    'senderMatched' | 'receivedWindowMatched' | 'caseIdMatched' | 'subjectPhraseMatched'
+    | 'senderMatched'
+    | 'receivedWindowMatched'
+    | 'caseIdMatched'
+    | 'subjectPhraseMatched'
+    | 'storeTokenMatched'
   >,
 ) =>
   message.senderMatched &&
   message.receivedWindowMatched &&
   message.caseIdMatched &&
-  message.subjectPhraseMatched
+  message.subjectPhraseMatched &&
+  message.storeTokenMatched
 
 export const maskGraphIdentifier = (value: string) =>
   value.length <= 8 ? '••••' : `${value.slice(0, 4)}…${value.slice(-4)}`
