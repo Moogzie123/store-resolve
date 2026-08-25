@@ -1,19 +1,52 @@
+import { createPublicKey, verify } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createInterface } from 'node:readline/promises'
 
 export const authority = 'https://login.microsoftonline.com/consumers'
-export const scopes =
-  'offline_access https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.Send'
+export const scopes = 'openid profile email offline_access Mail.Read Mail.Send'
+export const oidcConfigurationUrl = `${authority}/v2.0/.well-known/openid-configuration`
+export const graphReadinessUrl =
+  'https://graph.microsoft.com/v1.0/me/mailFolders/inbox?$select=id,displayName,totalItemCount,unreadItemCount'
+export const graphSanityUrl =
+  'https://graph.microsoft.com/v1.0/me/messages?$filter=receivedDateTime%20ge%202026-08-01T00%3A00%3A00Z%20and%20receivedDateTime%20lt%202026-08-02T00%3A00%3A00Z&$select=id,receivedDateTime,from&$top=3'
 
 const formHeaders = { 'content-type': 'application/x-www-form-urlencoded' }
 const sleep = (milliseconds) =>
   new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds))
+const allowedClockSkewSeconds = 60
 
 const safeJson = async (response) => {
   const value = await response.json().catch(() => null)
-  return value && typeof value === 'object' ? value : {}
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+}
+
+const decodeJsonSegment = (segment, label) => {
+  try {
+    const value = JSON.parse(Buffer.from(segment, 'base64url').toString('utf8'))
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error()
+    return value
+  } catch {
+    throw new Error(`Microsoft ID token has an invalid ${label}.`)
+  }
+}
+
+const requireHttpsMicrosoftUrl = (value, label) => {
+  if (typeof value !== 'string') throw new Error(`Microsoft OIDC ${label} is missing.`)
+  const url = new URL(value)
+  if (url.protocol !== 'https:' || url.hostname !== 'login.microsoftonline.com')
+    throw new Error(`Microsoft OIDC ${label} is not trusted.`)
+  return url.href
+}
+
+const signingKeyIssuerMatches = (keyIssuer, tokenIssuer, tenantId) => {
+  if (typeof keyIssuer !== 'string') return true
+  if (keyIssuer.includes('{tenantid}')) {
+    if (typeof tenantId !== 'string' || !tenantId) return false
+    return keyIssuer.replace('{tenantid}', tenantId) === tokenIssuer
+  }
+  return keyIssuer === tokenIssuer
 }
 
 export async function requestDeviceCode(clientId, fetchImpl = fetch) {
@@ -42,7 +75,7 @@ export async function requestDeviceCode(clientId, fetchImpl = fetch) {
   }
 }
 
-export async function pollForRefreshToken(clientId, device, fetchImpl = fetch, wait = sleep) {
+export async function pollForTokenResponse(clientId, device, fetchImpl = fetch, wait = sleep) {
   const deadline = Date.now() + device.expiresIn * 1000
   let intervalSeconds = device.interval
   while (Date.now() < deadline) {
@@ -57,7 +90,19 @@ export async function pollForRefreshToken(clientId, device, fetchImpl = fetch, w
       }),
     })
     const body = await safeJson(response)
-    if (response.ok && typeof body.refresh_token === 'string') return body.refresh_token
+    if (response.ok) {
+      if (
+        typeof body.access_token !== 'string' ||
+        typeof body.refresh_token !== 'string' ||
+        typeof body.id_token !== 'string'
+      )
+        throw new Error('Microsoft authorization did not return the required identity credentials.')
+      return {
+        accessToken: body.access_token,
+        refreshToken: body.refresh_token,
+        idToken: body.id_token,
+      }
+    }
     if (body.error === 'authorization_pending') continue
     if (body.error === 'slow_down') {
       intervalSeconds += 5
@@ -69,6 +114,123 @@ export async function pollForRefreshToken(clientId, device, fetchImpl = fetch, w
     throw new Error('Microsoft device authorization failed during token polling.')
   }
   throw new Error('The Microsoft device code expired.')
+}
+
+export async function validateIdToken(
+  idToken,
+  clientId,
+  fetchImpl = fetch,
+  nowSeconds = Math.floor(Date.now() / 1000),
+) {
+  const segments = idToken.split('.')
+  if (segments.length !== 3) throw new Error('Microsoft ID token is malformed.')
+  const [encodedHeader, encodedPayload, encodedSignature] = segments
+  const header = decodeJsonSegment(encodedHeader, 'header')
+  const claims = decodeJsonSegment(encodedPayload, 'payload')
+  if (header.alg !== 'RS256' || typeof header.kid !== 'string')
+    throw new Error('Microsoft ID token uses an unsupported signing key.')
+
+  const metadataResponse = await fetchImpl(oidcConfigurationUrl)
+  const metadata = await safeJson(metadataResponse)
+  if (!metadataResponse.ok) throw new Error('Microsoft OIDC discovery failed.')
+  const issuer = requireHttpsMicrosoftUrl(metadata.issuer, 'issuer').replace(/\/$/, '')
+  const jwksUri = requireHttpsMicrosoftUrl(metadata.jwks_uri, 'signing-key URL')
+
+  const keysResponse = await fetchImpl(jwksUri)
+  const keysBody = await safeJson(keysResponse)
+  if (!keysResponse.ok || !Array.isArray(keysBody.keys))
+    throw new Error('Microsoft signing-key retrieval failed.')
+  const signingKey = keysBody.keys.find(
+    (key) =>
+      key &&
+      typeof key === 'object' &&
+      key.kid === header.kid &&
+      key.kty === 'RSA' &&
+      (key.use === undefined || key.use === 'sig') &&
+      (key.alg === undefined || key.alg === 'RS256'),
+  )
+  if (!signingKey) throw new Error('Microsoft ID-token signing key was not found.')
+
+  let signatureValid = false
+  try {
+    const publicKey = createPublicKey({ key: signingKey, format: 'jwk' })
+    signatureValid = verify(
+      'RSA-SHA256',
+      Buffer.from(`${encodedHeader}.${encodedPayload}`),
+      publicKey,
+      Buffer.from(encodedSignature, 'base64url'),
+    )
+  } catch {
+    signatureValid = false
+  }
+  if (!signatureValid) throw new Error('Microsoft ID-token signature is invalid.')
+
+  if (claims.iss !== issuer) throw new Error('Microsoft ID-token issuer is invalid.')
+  if (!signingKeyIssuerMatches(signingKey.issuer, claims.iss, claims.tid))
+    throw new Error('Microsoft signing-key issuer is invalid.')
+  const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud]
+  if (!audiences.includes(clientId)) throw new Error('Microsoft ID-token audience is invalid.')
+  if (typeof claims.exp !== 'number' || claims.exp <= nowSeconds - allowedClockSkewSeconds)
+    throw new Error('Microsoft ID token is expired.')
+  if (typeof claims.nbf === 'number' && claims.nbf > nowSeconds + allowedClockSkewSeconds)
+    throw new Error('Microsoft ID token is not active yet.')
+  if (typeof claims.iat === 'number' && claims.iat > nowSeconds + allowedClockSkewSeconds)
+    throw new Error('Microsoft ID token has an invalid issued-at time.')
+
+  // Device Code Flow has no caller-supplied state or nonce parameter to correlate.
+  return claims
+}
+
+export function maskMailbox(mailbox) {
+  const separator = mailbox.lastIndexOf('@')
+  if (separator <= 0) return '***'
+  const local = mailbox.slice(0, separator)
+  const domain = mailbox.slice(separator + 1)
+  const visible = local.length > 1 ? `${local[0]}***${local.at(-1)}` : `${local[0]}***`
+  return `${visible}@${domain}`
+}
+
+export function confirmExpectedMailbox(claims, expectedMailbox) {
+  const expected = expectedMailbox.toLowerCase()
+  const identifiers = [claims.email, claims.preferred_username].filter(
+    (value) => typeof value === 'string' && value.length > 0,
+  )
+  if (identifiers.length === 0)
+    return {
+      matches: false,
+      maskedIdentity: '***',
+      reason: 'No mailbox identity claim was returned.',
+    }
+  const normalized = identifiers.map((value) => value.toLowerCase())
+  const matchingIdentity = identifiers[normalized.indexOf(expected)]
+  const matches = normalized.every((value) => value === expected)
+  return {
+    matches,
+    maskedIdentity: maskMailbox(matchingIdentity ?? identifiers[0]),
+    reason: matches
+      ? undefined
+      : 'The authorized Microsoft account does not match MS_MAILBOX_ADDRESS.',
+  }
+}
+
+const graphHeaders = (accessToken) => ({ authorization: `Bearer ${accessToken}` })
+
+export async function verifyGraphReadiness(accessToken, fetchImpl = fetch) {
+  const response = await fetchImpl(graphReadinessUrl, { headers: graphHeaders(accessToken) })
+  if (!response.ok) throw new Error('Microsoft Graph readiness verification failed.')
+  const metadata = await safeJson(response)
+  if (typeof metadata.id !== 'string')
+    throw new Error('Microsoft Graph readiness metadata was incomplete.')
+  return true
+}
+
+export async function runMailboxMetadataSanityCheck(accessToken, fetchImpl = fetch) {
+  const response = await fetchImpl(graphSanityUrl, { headers: graphHeaders(accessToken) })
+  if (!response.ok) throw new Error('Microsoft Graph mailbox metadata sanity check failed.')
+  const body = await safeJson(response)
+  if (!Array.isArray(body.value) || body.value.length > 3)
+    throw new Error('Microsoft Graph mailbox metadata sanity response was invalid.')
+  return body.value.length
 }
 
 export async function storeRefreshToken(refreshToken, cwd = process.cwd()) {
@@ -87,22 +249,45 @@ export async function storeRefreshToken(refreshToken, cwd = process.cwd()) {
   })
 }
 
+export async function authorizeExpectedMailbox({
+  clientId,
+  expectedMailbox,
+  fetchImpl = fetch,
+  wait = sleep,
+  storeToken = storeRefreshToken,
+  log = console.log,
+}) {
+  const device = await requestDeviceCode(clientId, fetchImpl)
+  log(`MICROSOFT_DEVICE_LOGIN_URL=${device.verificationUri}`)
+  log(`MICROSOFT_DEVICE_CODE=${device.userCode}`)
+  const tokens = await pollForTokenResponse(clientId, device, fetchImpl, wait)
+  const claims = await validateIdToken(tokens.idToken, clientId, fetchImpl)
+  const confirmation = confirmExpectedMailbox(claims, expectedMailbox)
+  log(`AUTHORIZED_MICROSOFT_IDENTITY=${confirmation.maskedIdentity}`)
+  log(`EXPECTED_MAILBOX_MATCH=${confirmation.matches ? 'YES' : 'NO'}`)
+  if (!confirmation.matches) throw new Error(confirmation.reason)
+  await storeToken(tokens.refreshToken)
+  log('MS_REFRESH_TOKEN was written directly to Cloudflare and was not displayed.')
+  await verifyGraphReadiness(tokens.accessToken, fetchImpl)
+  log('MICROSOFT_GRAPH_READY=YES')
+  const sanityCount = await runMailboxMetadataSanityCheck(tokens.accessToken, fetchImpl)
+  log(`AUGUST_1_METADATA_RECORD_COUNT=${sanityCount}`)
+  return { ...confirmation, graphReady: true, sanityCount }
+}
+
 export async function main() {
   let clientId = process.env.MS_CLIENT_ID?.trim()
-  if (!clientId) {
-    const input = createInterface({ input: process.stdin, output: process.stdout })
-    clientId = (await input.question('Microsoft Application client ID: ')).trim()
-    input.close()
-  }
+  let expectedMailbox = process.env.MS_MAILBOX_ADDRESS?.trim()
+  const input = createInterface({ input: process.stdin, output: process.stdout })
+  if (!clientId) clientId = (await input.question('Microsoft Application client ID: ')).trim()
+  if (!expectedMailbox)
+    expectedMailbox = (await input.question('Expected Microsoft mailbox address: ')).trim()
+  input.close()
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(clientId))
     throw new Error('MS_CLIENT_ID must be the Application (client) ID GUID.')
-
-  const device = await requestDeviceCode(clientId)
-  console.log(`MICROSOFT_DEVICE_LOGIN_URL=${device.verificationUri}`)
-  console.log(`MICROSOFT_DEVICE_CODE=${device.userCode}`)
-  const refreshToken = await pollForRefreshToken(clientId, device)
-  await storeRefreshToken(refreshToken)
-  console.log('MS_REFRESH_TOKEN was written directly to Cloudflare and was not displayed.')
+  if (!/^[^@\s]+@[^@\s]+$/.test(expectedMailbox))
+    throw new Error('MS_MAILBOX_ADDRESS must be a valid mailbox address.')
+  await authorizeExpectedMailbox({ clientId, expectedMailbox })
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
