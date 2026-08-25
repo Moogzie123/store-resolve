@@ -92,6 +92,22 @@ describe('Gmail MIME normalization and deterministic extraction', () => {
     expect(extracted.storeNumber).toBeUndefined()
     expect(extracted.severity).toBe('CRITICAL')
   })
+
+  it('extracts the approved DBI case and normalizes its DD store token', () => {
+    const extracted = extractComplaint(
+      normalized({
+        subject: 'DBI Case # (CCC11122413) - Guest Contact: Slow Service - PC 350909-DD',
+        textBody: 'Guest complaint: slow service',
+      }),
+    )
+
+    expect(extracted).toMatchObject({
+      isComplaint: true,
+      externalCaseId: 'CCC11122413',
+      storeNumber: '350909',
+      category: 'Service',
+    })
+  })
 })
 
 describe('Gmail provider boundary', () => {

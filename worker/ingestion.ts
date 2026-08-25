@@ -66,11 +66,12 @@ export function extractComplaint(message: NormalizedEmailMessage): ComplaintExtr
       first(
         combined,
         /(?:^|\n)\s*(?:complaint\s+reference|case|complaint|reference|ref)\s*(?:id|number|no\.?|#)\s*[:#-]?\s*([A-Z0-9][A-Z0-9-]{2,50})/im,
-      ) ?? first(combined, /\b(?:case|reference)\s*[:#-]\s*([A-Z0-9][A-Z0-9-]{2,50})/i),
-    storeNumber: first(
-      combined,
-      /\b(?:store|location)\s*(?:number|no\.?|#)?\s*[:#-]?\s*(\d{3,8})\b/i,
-    ),
+      ) ??
+      first(combined, /\b(?:case|reference)\s*[:#-]\s*([A-Z0-9][A-Z0-9-]{2,50})/i) ??
+      first(combined, /\bDBI\s+Case\s*#\s*\(\s*([A-Z0-9][A-Z0-9-]{2,50})\s*\)/i),
+    storeNumber:
+      first(combined, /\b(?:store|location)\s*(?:number|no\.?|#)?\s*[:#-]?\s*(\d{3,8})\b/i) ??
+      first(combined, /\b(\d{3,8})-DD\b/i),
     locationHint: first(combined, /\b(?:store address|location|address)\s*:\s*([^\n]{4,160})/i),
     customerName: first(combined, /\b(?:customer|guest)\s*name\s*:\s*([^\n]{2,100})/i),
     customerEmail: first(combined, /\b(?:customer|guest)\s*email\s*:\s*([^\s<>]+@[^\s<>]+)/i),
