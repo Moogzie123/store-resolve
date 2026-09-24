@@ -345,7 +345,7 @@ describe('Microsoft Graph delegated mail provider', () => {
     expect(String(fetch.mock.calls[1][0])).not.toMatch(/subject|body|recipients|attachments/i)
   })
 
-  it('runs the durable uniqueness query across the full UTC day with only approved metadata', async () => {
+  it('uses the necessary bounded sender fallback with only approved metadata', async () => {
     const subject = 'DBI Case # (CCC11122413) - Guest Contact: Slow Service - Store 350-909 DD'
     const fetch = vi
       .fn()
@@ -386,16 +386,14 @@ describe('Microsoft Graph delegated mail provider', () => {
     const url = new URL(String(fetch.mock.calls[1][0]))
     expect(url.pathname).toBe('/v1.0/me/messages')
     expect(url.searchParams.get('$filter')).toBe(
-      `receivedDateTime ge ${pilotUniquenessDiagnostic.receivedStart} and receivedDateTime lt ${pilotUniquenessDiagnostic.receivedEnd}`,
+      `receivedDateTime ge ${pilotUniquenessDiagnostic.receivedStart} and receivedDateTime lt ${pilotUniquenessDiagnostic.receivedEnd} and from/emailAddress/address eq '${pilotMessageSelector.senderAddress}'`,
     )
     expect(url.searchParams.get('$select')).toBe(
       'id,conversationId,parentFolderId,subject,receivedDateTime,from',
     )
     expect(url.searchParams.get('$top')).toBe('10')
     expect(url.searchParams.has('$search')).toBe(false)
-    expect(String(fetch.mock.calls[1][0])).not.toMatch(
-      /body|bodyPreview|recipients|attachments|customerservice/i,
-    )
+    expect(String(fetch.mock.calls[1][0])).not.toMatch(/body|bodyPreview|recipients|attachments/i)
   })
 
   it('builds a durable redacted report without retaining raw IDs or the raw subject', async () => {

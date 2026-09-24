@@ -360,6 +360,7 @@ export class MicrosoftGraphProvider implements EmailProvider {
       $filter: [
         `receivedDateTime ge ${pilotUniquenessDiagnostic.receivedStart}`,
         `receivedDateTime lt ${pilotUniquenessDiagnostic.receivedEnd}`,
+        `from/emailAddress/address eq '${pilotMessageSelector.senderAddress}'`,
       ].join(' and '),
       $select: 'id,conversationId,parentFolderId,subject,receivedDateTime,from',
       $top: String(pilotUniquenessDiagnostic.maxRecords),
