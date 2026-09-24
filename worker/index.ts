@@ -19,6 +19,7 @@ import { loadState, persistState, type D1Database } from './d1'
 import { SignalWireSmsProvider } from './providers'
 import { applySignalWireCallback, reconcileSignalWireMessage } from './callbacks'
 import { maskGraphIdentifier, MicrosoftGraphProvider } from './microsoft-graph'
+import { buildPilotUniquenessReport } from './pilot-uniqueness'
 import { EmailProviderError } from './email-provider'
 import { ingestSinglePilotComplaint } from './ingestion'
 import { runScheduledOperations } from './operations'
@@ -351,6 +352,75 @@ app.get('/api/admin/email/pilot-diagnostic', async (c) => {
     const code = error instanceof EmailProviderError ? error.code : 'MS_GRAPH_DIAGNOSTIC_FAILED'
     return c.json({ ok: false, error: code }, 503)
   }
+})
+
+app.post('/api/admin/email/pilot-uniqueness-diagnostic', async (c) => {
+  const user = c.get('user')
+  if (!canAdmin(user)) return c.json(jsonError('Owner access required'), 403)
+  const state = await loadState(c.env.DB)
+  if (
+    state.config.mode !== 'FAMILY_PILOT' ||
+    state.config.externalNotificationsEnabled ||
+    state.config.emailIngestionEnabled ||
+    state.config.emailAckEnabled
+  )
+    return c.json(jsonError('Production safety controls must remain locked down'), 409)
+  const graph = emailProvider(c.env)
+  if (!graph.ready)
+    return c.json({ ok: false, ready: false, error: 'MS_GRAPH_NOT_CONFIGURED' }, 503)
+  try {
+    await graph.verifyConnection()
+    const metadata = await graph.listPilotUniquenessMetadata()
+    const matches = metadata.records.filter(
+      (record) =>
+        record.senderMatched &&
+        record.caseIdMatched &&
+        record.subjectPhraseMatched &&
+        record.storeNumberMatched,
+    )
+    const folderCache = new Map<string, string>()
+    const matchingWithFolders = []
+    for (const record of matches) {
+      let folderName = folderCache.get(record.parentFolderId)
+      if (!folderName) {
+        folderName = (await graph.getMailFolderMetadata(record.parentFolderId)).displayName
+        folderCache.set(record.parentFolderId, folderName)
+      }
+      matchingWithFolders.push({ ...record, folderName })
+    }
+    const report = await buildPilotUniquenessReport(metadata, matchingWithFolders)
+    const runId = crypto.randomUUID()
+    await c.env.DB.prepare(
+      `INSERT INTO integration_events(id,integration,event_type,entity_id,outcome,detail_code,metadata,created_at) VALUES(?,'MICROSOFT_GRAPH','PILOT_UNIQUENESS_DIAGNOSTIC',?, 'SUCCESS',?,?,?)`,
+    )
+      .bind(
+        crypto.randomUUID(),
+        runId,
+        report.classification,
+        JSON.stringify(report),
+        new Date().toISOString(),
+      )
+      .run()
+    return c.json({ ok: true, diagnosticRunId: runId, ...report })
+  } catch (error) {
+    const code = error instanceof EmailProviderError ? error.code : 'MS_GRAPH_DIAGNOSTIC_FAILED'
+    return c.json({ ok: false, error: code }, 503)
+  }
+})
+
+app.get('/api/admin/email/pilot-uniqueness-diagnostic/latest', async (c) => {
+  const user = c.get('user')
+  if (!canAdmin(user)) return c.json(jsonError('Owner access required'), 403)
+  const row = await c.env.DB.prepare(
+    `SELECT entity_id,metadata,created_at FROM integration_events WHERE integration='MICROSOFT_GRAPH' AND event_type='PILOT_UNIQUENESS_DIAGNOSTIC' ORDER BY created_at DESC LIMIT 1`,
+  ).first<{ entity_id: string; metadata: string; created_at: string }>()
+  if (!row) return c.json(jsonError('No durable uniqueness diagnostic exists'), 404)
+  return c.json({
+    ok: true,
+    diagnosticRunId: row.entity_id,
+    createdAt: row.created_at,
+    ...JSON.parse(row.metadata),
+  })
 })
 
 app.get('/diagnostics/pilot-mail', (c) => {

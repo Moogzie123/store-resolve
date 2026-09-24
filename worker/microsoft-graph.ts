@@ -59,6 +59,24 @@ export interface MailboxIdentityDiagnosticResult {
   hasMore: boolean
 }
 
+export interface PilotUniquenessMetadata {
+  id: string
+  conversationId: string
+  parentFolderId: string
+  receivedDateTime: string
+  subject: string
+  senderAddress: string
+  senderMatched: boolean
+  caseIdMatched: boolean
+  subjectPhraseMatched: boolean
+  storeNumberMatched: boolean
+}
+
+export interface PilotUniquenessMetadataResult {
+  records: PilotUniquenessMetadata[]
+  hasMore: boolean
+}
+
 export const pilotMessageSelector = {
   senderAddress: 'customerservice@dunkinbrands.com',
   caseId: 'CCC11122413',
@@ -81,6 +99,12 @@ export const mailboxIdentityDiagnosticWindows = {
     receivedStart: '2026-07-01T00:00:00.000Z',
     receivedEnd: '2026-08-25T00:00:00.000Z',
   },
+} as const
+
+export const pilotUniquenessDiagnostic = {
+  receivedStart: '2026-08-01T00:00:00.000Z',
+  receivedEnd: '2026-08-02T00:00:00.000Z',
+  maxRecords: 10,
 } as const
 
 export const isApprovedPilotMessageMetadata = (
@@ -329,6 +353,53 @@ export class MicrosoftGraphProvider implements EmailProvider {
         'Microsoft Graph folder metadata was incomplete',
       )
     return { id: folder.id, displayName: folder.displayName }
+  }
+
+  async listPilotUniquenessMetadata(): Promise<PilotUniquenessMetadataResult> {
+    const params = new URLSearchParams({
+      $filter: [
+        `receivedDateTime ge ${pilotUniquenessDiagnostic.receivedStart}`,
+        `receivedDateTime lt ${pilotUniquenessDiagnostic.receivedEnd}`,
+      ].join(' and '),
+      $select: 'id,conversationId,parentFolderId,subject,receivedDateTime,from',
+      $top: String(pilotUniquenessDiagnostic.maxRecords),
+    })
+    const page = await this.request<{
+      value?: GraphMessage[]
+      '@odata.nextLink'?: string
+    }>(`/me/messages?${params.toString()}`)
+    const records = (page.value ?? []).map((message) => {
+      const senderAddress = message.from?.emailAddress?.address?.trim() ?? ''
+      if (
+        !message.id ||
+        !message.conversationId ||
+        !message.parentFolderId ||
+        !message.subject ||
+        !message.receivedDateTime ||
+        !senderAddress
+      )
+        throw new EmailProviderError(
+          'MS_GRAPH_INVALID_UNIQUENESS_METADATA',
+          'Microsoft Graph uniqueness diagnostic metadata was incomplete',
+        )
+      const normalizedSubject = message.subject.toLowerCase()
+      return {
+        id: message.id,
+        conversationId: message.conversationId,
+        parentFolderId: message.parentFolderId,
+        receivedDateTime: message.receivedDateTime,
+        subject: message.subject,
+        senderAddress,
+        senderMatched:
+          senderAddress.toLowerCase() === pilotMessageSelector.senderAddress.toLowerCase(),
+        caseIdMatched: normalizedSubject.includes(pilotMessageSelector.caseId.toLowerCase()),
+        subjectPhraseMatched: normalizedSubject.includes(
+          pilotMessageSelector.subjectPhrase.toLowerCase(),
+        ),
+        storeNumberMatched: /350\D*909/i.test(message.subject),
+      }
+    })
+    return { records, hasMore: Boolean(page['@odata.nextLink']) }
   }
 
   private async listMailboxIdentityMetadata(

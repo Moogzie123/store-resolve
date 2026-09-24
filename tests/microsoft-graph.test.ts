@@ -5,8 +5,10 @@ import {
   mailboxIdentityDiagnosticWindows,
   normalizeGraphMessage,
   pilotMessageSelector,
+  pilotUniquenessDiagnostic,
 } from '../worker/microsoft-graph'
 import { ingestSinglePilotComplaint, pollEmail } from '../worker/ingestion'
+import { buildPilotUniquenessReport } from '../worker/pilot-uniqueness'
 import type { D1Database } from '../worker/d1'
 
 const config = {
@@ -341,6 +343,139 @@ describe('Microsoft Graph delegated mail provider', () => {
     expect(url.searchParams.get('$top')).toBe('3')
     expect(url.searchParams.has('$search')).toBe(false)
     expect(String(fetch.mock.calls[1][0])).not.toMatch(/subject|body|recipients|attachments/i)
+  })
+
+  it('runs the durable uniqueness query across the full UTC day with only approved metadata', async () => {
+    const subject = 'DBI Case # (CCC11122413) - Guest Contact: Slow Service - Store 350-909 DD'
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(tokenResponse())
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            value: [
+              {
+                id: 'immutable-message-id',
+                conversationId: 'conversation-id',
+                parentFolderId: 'folder-id',
+                subject,
+                receivedDateTime: '2026-08-01T18:27:00Z',
+                from: {
+                  emailAddress: { address: 'CustomerService@DunkinBrands.com' },
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+      )
+    vi.stubGlobal('fetch', fetch)
+    await expect(
+      new MicrosoftGraphProvider(config).listPilotUniquenessMetadata(),
+    ).resolves.toMatchObject({
+      hasMore: false,
+      records: [
+        {
+          senderMatched: true,
+          caseIdMatched: true,
+          subjectPhraseMatched: true,
+          storeNumberMatched: true,
+        },
+      ],
+    })
+    const url = new URL(String(fetch.mock.calls[1][0]))
+    expect(url.pathname).toBe('/v1.0/me/messages')
+    expect(url.searchParams.get('$filter')).toBe(
+      `receivedDateTime ge ${pilotUniquenessDiagnostic.receivedStart} and receivedDateTime lt ${pilotUniquenessDiagnostic.receivedEnd}`,
+    )
+    expect(url.searchParams.get('$select')).toBe(
+      'id,conversationId,parentFolderId,subject,receivedDateTime,from',
+    )
+    expect(url.searchParams.get('$top')).toBe('10')
+    expect(url.searchParams.has('$search')).toBe(false)
+    expect(String(fetch.mock.calls[1][0])).not.toMatch(
+      /body|bodyPreview|recipients|attachments|customerservice/i,
+    )
+  })
+
+  it('builds a durable redacted report without retaining raw IDs or the raw subject', async () => {
+    const record = {
+      id: 'raw-immutable-message-1234567890',
+      conversationId: 'raw-conversation-1234567890',
+      parentFolderId: 'raw-folder-id',
+      receivedDateTime: '2026-08-01T18:27:00Z',
+      subject:
+        'DBI Case # (CCC11122413) - Guest Contact: Slow Service - Store 350909-DD - private suffix',
+      senderAddress: pilotMessageSelector.senderAddress,
+      senderMatched: true,
+      caseIdMatched: true,
+      subjectPhraseMatched: true,
+      storeNumberMatched: true,
+    }
+    const report = await buildPilotUniquenessReport({ records: [record], hasMore: false }, [
+      { ...record, folderName: 'Archive' },
+    ])
+    expect(report).toMatchObject({
+      totalRecordsExamined: 1,
+      senderMatchCount: 1,
+      caseIdMatchCount: 1,
+      caseAndPhraseMatchCount: 1,
+      allCriteriaMatchCount: 1,
+      classification: 'UNIQUE_CANONICAL',
+      canonicalMessageId: 'raw-…7890',
+      matchingCandidates: [
+        {
+          messageId: 'raw-…7890',
+          conversationId: 'raw-…7890',
+          parentFolderName: 'Archive',
+          subjectStructure: 'ORIGINAL · CASE(CCC11122413) · PHRASE(Slow Service) · STORE(350909)',
+        },
+      ],
+    })
+    const serialized = JSON.stringify(report)
+    expect(serialized).not.toContain(record.id)
+    expect(serialized).not.toContain(record.conversationId)
+    expect(serialized).not.toContain(record.subject)
+    expect(serialized).not.toContain(record.senderAddress)
+  })
+
+  it('prefers the sole inbound original over a sent reply using metadata only', async () => {
+    const base = {
+      parentFolderId: 'folder-id',
+      receivedDateTime: '2026-08-01T18:27:00Z',
+      senderAddress: pilotMessageSelector.senderAddress,
+      senderMatched: true,
+      caseIdMatched: true,
+      subjectPhraseMatched: true,
+      storeNumberMatched: true,
+    }
+    const original = {
+      ...base,
+      id: 'original-message-123456',
+      conversationId: 'same-conversation-123456',
+      subject: 'CCC11122413 Slow Service 350909-DD',
+      folderName: 'Archive',
+    }
+    const reply = {
+      ...base,
+      id: 'reply-message-123456789',
+      conversationId: 'same-conversation-123456',
+      subject: 'RE: CCC11122413 Slow Service 350909-DD',
+      folderName: 'Sent Items',
+    }
+    const report = await buildPilotUniquenessReport(
+      { records: [original, reply], hasMore: false },
+      [original, reply],
+    )
+    expect(report.classification).toBe('CANONICAL_WITH_COPIES')
+    expect(report.canonicalMessageId).toBe('orig…3456')
+    expect(report.allCriteriaMatchCount).toBe(2)
+  })
+
+  it('does not claim uniqueness when Graph indicates more than ten records', async () => {
+    const report = await buildPilotUniquenessReport({ records: [], hasMore: true }, [])
+    expect(report.classification).toBe('INCOMPLETE_LIMIT_REACHED')
+    expect(report.canonicalMessageId).toBeUndefined()
   })
 
   it('keeps non-matching subjects as inspected metadata but excludes them as candidates', async () => {
