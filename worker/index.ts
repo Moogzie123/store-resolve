@@ -18,8 +18,13 @@ import { authenticate, canAdmin, canViewComplaint, maskEmail, maskPhone } from '
 import { loadState, persistState, type D1Database } from './d1'
 import { SignalWireSmsProvider } from './providers'
 import { applySignalWireCallback, reconcileSignalWireMessage } from './callbacks'
-import { maskGraphIdentifier, MicrosoftGraphProvider } from './microsoft-graph'
+import {
+  maskGraphIdentifier,
+  MicrosoftGraphProvider,
+  pilotBodyDiagnosticCandidates,
+} from './microsoft-graph'
 import { buildPilotUniquenessReport } from './pilot-uniqueness'
+import { buildPilotBodyDiagnosticReport } from './pilot-body-diagnostic'
 import { EmailProviderError } from './email-provider'
 import { ingestSinglePilotComplaint } from './ingestion'
 import { runScheduledOperations } from './operations'
@@ -434,6 +439,85 @@ app.get('/api/admin/email/pilot-uniqueness-diagnostic/latest', async (c) => {
     createdAt: row.created_at,
     ...JSON.parse(row.metadata),
   })
+})
+
+app.get('/api/admin/email/pilot-body-diagnostic', (c) => {
+  const user = c.get('user')
+  if (!canAdmin(user)) return c.json(jsonError('Owner access required'), 403)
+  return c.html(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>StoreResolve body diagnostic</title></head>
+<body><main><h1>Two-message body diagnostic</h1>
+<p>This reads only the two approved case CCC11122413 messages. It does not access attachments or run ingestion.</p>
+<form method="post" action="/api/admin/email/pilot-body-diagnostic">
+<button type="submit">Run approved body diagnostic once</button>
+</form></main></body></html>`)
+})
+
+app.post('/api/admin/email/pilot-body-diagnostic', async (c) => {
+  const user = c.get('user')
+  if (!canAdmin(user)) return c.json(jsonError('Owner access required'), 403)
+  const state = await loadState(c.env.DB)
+  if (
+    state.config.mode !== 'FAMILY_PILOT' ||
+    state.config.externalNotificationsEnabled ||
+    state.config.emailIngestionEnabled ||
+    state.config.emailAckEnabled
+  )
+    return c.json(jsonError('Production safety controls must remain locked down'), 409)
+  const graph = emailProvider(c.env)
+  if (!graph.ready)
+    return c.json({ ok: false, ready: false, error: 'MS_GRAPH_NOT_CONFIGURED' }, 503)
+  try {
+    await graph.verifyConnection()
+    const candidates = (await graph.findPilotBodyDiagnosticCandidates()).sort(
+      (left, right) => Date.parse(left.receivedDateTime) - Date.parse(right.receivedDateTime),
+    )
+    const identitiesMatch =
+      candidates.length === pilotBodyDiagnosticCandidates.length &&
+      candidates.every(
+        (candidate, index) =>
+          maskGraphIdentifier(candidate.id) === pilotBodyDiagnosticCandidates[index].maskedId &&
+          candidate.receivedDateTime === pilotBodyDiagnosticCandidates[index].receivedDateTime,
+      )
+    if (!identitiesMatch)
+      return c.json({ ok: false, error: 'MS_GRAPH_BODY_DIAGNOSTIC_SELECTION_CHANGED' }, 409)
+    const fetched = await Promise.all(
+      candidates.map((candidate) => graph.getPilotBodyDiagnosticMessage(candidate.id)),
+    )
+    const bodyIdentitiesMatch = fetched.every(
+      (message, index) =>
+        message.id === candidates[index].id &&
+        message.threadId === candidates[index].conversationId &&
+        message.internalDate === new Date(candidates[index].receivedDateTime).toISOString() &&
+        (message.sender.trim().toLowerCase() === 'customerservice@dunkinbrands.com' ||
+          message.sender.toLowerCase().endsWith('<customerservice@dunkinbrands.com>')),
+    )
+    if (!bodyIdentitiesMatch)
+      return c.json({ ok: false, error: 'MS_GRAPH_BODY_DIAGNOSTIC_IDENTITY_MISMATCH' }, 409)
+    const report = await buildPilotBodyDiagnosticReport([fetched[0], fetched[1]])
+    const runId = crypto.randomUUID()
+    await c.env.DB.prepare(
+      `INSERT INTO integration_events(id,integration,event_type,entity_id,outcome,detail_code,metadata,created_at) VALUES(?,'MICROSOFT_GRAPH','PILOT_BODY_DIAGNOSTIC',?,'SUCCESS',?,?,?)`,
+    )
+      .bind(
+        crypto.randomUUID(),
+        runId,
+        report.classification,
+        JSON.stringify(report),
+        new Date().toISOString(),
+      )
+      .run()
+    return c.json({ ok: true, diagnosticRunId: runId, ...report })
+  } catch (error) {
+    const code =
+      error instanceof EmailProviderError
+        ? error.code
+        : error instanceof Error
+          ? error.message
+          : 'MS_GRAPH_BODY_DIAGNOSTIC_FAILED'
+    return c.json({ ok: false, error: code }, 503)
+  }
 })
 
 app.get('/diagnostics/pilot-mail', (c) => {

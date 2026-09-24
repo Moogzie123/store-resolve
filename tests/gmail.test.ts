@@ -267,6 +267,33 @@ describe('durable Gmail ingestion and acknowledgment idempotency', () => {
     expect(state.complaints[0].followUps).toHaveLength(2)
   })
 
+  it('uses the case reference as the cross-conversation complaint dedupe key', async () => {
+    const first = await ingestGmailMessage(
+      db,
+      normalized({ id: 'source-a', threadId: 'conversation-a' }),
+    )
+    const second = await ingestGmailMessage(
+      db,
+      normalized({ id: 'source-b', threadId: 'conversation-b' }),
+    )
+    expect(first.status).toBe('PROCESSED')
+    expect(second).toMatchObject({ status: 'FOLLOW_UP', complaintId: first.complaintId })
+    const count = await db.prepare('SELECT COUNT(*) AS count FROM complaints').first<{
+      count: number
+    }>()
+    expect(count?.count).toBe(1)
+    const sources = await db
+      .prepare(
+        'SELECT gmail_message_id,complaint_id FROM gmail_messages WHERE gmail_message_id IN (?,?) ORDER BY gmail_message_id',
+      )
+      .bind('source-a', 'source-b')
+      .all<{ gmail_message_id: string; complaint_id: string }>()
+    expect(sources.results).toEqual([
+      { gmail_message_id: 'source-a', complaint_id: first.complaintId },
+      { gmail_message_id: 'source-b', complaint_id: first.complaintId },
+    ])
+  })
+
   it('persists routing review and ignored states without inventing a store', async () => {
     const review = await ingestGmailMessage(
       db,

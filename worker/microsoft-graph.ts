@@ -77,6 +77,11 @@ export interface PilotUniquenessMetadataResult {
   hasMore: boolean
 }
 
+export const pilotBodyDiagnosticCandidates = [
+  { maskedId: 'AAkA…DQAA', receivedDateTime: '2026-08-01T18:26:14Z' },
+  { maskedId: 'AAkA…EQAA', receivedDateTime: '2026-08-01T18:27:50Z' },
+] as const
+
 export const pilotMessageSelector = {
   senderAddress: 'customerservice@dunkinbrands.com',
   caseId: 'CCC11122413',
@@ -401,6 +406,73 @@ export class MicrosoftGraphProvider implements EmailProvider {
       }
     })
     return { records, hasMore: Boolean(page['@odata.nextLink']) }
+  }
+
+  async findPilotBodyDiagnosticCandidates(): Promise<PilotUniquenessMetadata[]> {
+    const params = new URLSearchParams({
+      $search: `"subject:${pilotMessageSelector.caseId}"`,
+      $filter: [
+        `receivedDateTime ge ${pilotUniquenessDiagnostic.receivedStart}`,
+        `receivedDateTime lt ${pilotUniquenessDiagnostic.receivedEnd}`,
+        `from/emailAddress/address eq '${pilotMessageSelector.senderAddress}'`,
+      ].join(' and '),
+      $select: 'id,conversationId,parentFolderId,subject,receivedDateTime,from',
+      $top: '3',
+    })
+    const page = await this.request<{ value?: GraphMessage[] }>(`/me/messages?${params.toString()}`)
+    return (page.value ?? []).flatMap((message) => {
+      const senderAddress = message.from?.emailAddress?.address?.trim() ?? ''
+      if (
+        !message.id ||
+        !message.conversationId ||
+        !message.parentFolderId ||
+        !message.subject ||
+        !message.receivedDateTime ||
+        !senderAddress
+      )
+        throw new EmailProviderError(
+          'MS_GRAPH_INVALID_BODY_DIAGNOSTIC_METADATA',
+          'Microsoft Graph body diagnostic metadata was incomplete',
+        )
+      const normalizedSubject = message.subject.toLowerCase()
+      const record = {
+        id: message.id,
+        conversationId: message.conversationId,
+        parentFolderId: message.parentFolderId,
+        receivedDateTime: message.receivedDateTime,
+        subject: message.subject,
+        senderAddress,
+        senderMatched:
+          senderAddress.toLowerCase() === pilotMessageSelector.senderAddress.toLowerCase(),
+        caseIdMatched: normalizedSubject.includes(pilotMessageSelector.caseId.toLowerCase()),
+        subjectPhraseMatched: normalizedSubject.includes(
+          pilotMessageSelector.subjectPhrase.toLowerCase(),
+        ),
+        storeNumberMatched: /350\D*909/i.test(message.subject),
+      }
+      return record.senderMatched &&
+        record.caseIdMatched &&
+        record.subjectPhraseMatched &&
+        record.storeNumberMatched
+        ? [record]
+        : []
+    })
+  }
+
+  async getPilotBodyDiagnosticMessage(id: string): Promise<NormalizedEmailMessage> {
+    const select = [
+      'id',
+      'conversationId',
+      'internetMessageId',
+      'receivedDateTime',
+      'subject',
+      'from',
+      'body',
+    ].join(',')
+    const message = await this.request<GraphMessage>(
+      `/me/messages/${encodeURIComponent(id)}?$select=${encodeURIComponent(select)}`,
+    )
+    return normalizeGraphMessage(message)
   }
 
   private async listMailboxIdentityMetadata(

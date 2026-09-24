@@ -9,6 +9,7 @@ import {
 } from '../worker/microsoft-graph'
 import { ingestSinglePilotComplaint, pollEmail } from '../worker/ingestion'
 import { buildPilotUniquenessReport } from '../worker/pilot-uniqueness'
+import { buildPilotBodyDiagnosticReport } from '../worker/pilot-body-diagnostic'
 import type { D1Database } from '../worker/d1'
 
 const config = {
@@ -474,6 +475,153 @@ describe('Microsoft Graph delegated mail provider', () => {
     const report = await buildPilotUniquenessReport({ records: [], hasMore: true }, [])
     expect(report.classification).toBe('INCOMPLETE_LIMIT_REACHED')
     expect(report.canonicalMessageId).toBeUndefined()
+  })
+
+  it('resolves only the two approved case candidates before any body read', async () => {
+    const subject = 'DBI Case # (CCC11122413) - Guest Contact: Slow Service - 350909-DD'
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(tokenResponse())
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            value: [
+              {
+                id: 'approved-a',
+                conversationId: 'conversation-a',
+                parentFolderId: 'inbox',
+                receivedDateTime: '2026-08-01T18:26:14Z',
+                subject,
+                from: { emailAddress: { address: pilotMessageSelector.senderAddress } },
+              },
+              {
+                id: 'approved-b',
+                conversationId: 'conversation-b',
+                parentFolderId: 'inbox',
+                receivedDateTime: '2026-08-01T18:27:50Z',
+                subject,
+                from: { emailAddress: { address: pilotMessageSelector.senderAddress } },
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+      )
+    vi.stubGlobal('fetch', fetch)
+    await expect(
+      new MicrosoftGraphProvider(config).findPilotBodyDiagnosticCandidates(),
+    ).resolves.toHaveLength(2)
+    const url = new URL(String(fetch.mock.calls[1][0]))
+    expect(url.pathname).toBe('/v1.0/me/messages')
+    expect(url.searchParams.get('$search')).toBe('"subject:CCC11122413"')
+    expect(url.searchParams.get('$filter')).toContain(
+      `from/emailAddress/address eq '${pilotMessageSelector.senderAddress}'`,
+    )
+    expect(url.searchParams.get('$select')).toBe(
+      'id,conversationId,parentFolderId,subject,receivedDateTime,from',
+    )
+    expect(url.searchParams.get('$top')).toBe('3')
+    expect(String(fetch.mock.calls[1][0])).not.toMatch(/body|attachment|recipient/i)
+  })
+
+  it('gets an approved message by immutable ID with only the authorized body fields', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(tokenResponse())
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: 'approved/id',
+            conversationId: 'conversation-a',
+            internetMessageId: '<provider-id@example.invalid>',
+            receivedDateTime: '2026-08-01T18:26:14Z',
+            subject: 'CCC11122413 Slow Service 350909-DD',
+            from: { emailAddress: { address: pilotMessageSelector.senderAddress } },
+            body: { contentType: 'text', content: 'Guest complaint: slow service' },
+          }),
+          { status: 200 },
+        ),
+      )
+    vi.stubGlobal('fetch', fetch)
+    await new MicrosoftGraphProvider(config).getPilotBodyDiagnosticMessage('approved/id')
+    const url = new URL(String(fetch.mock.calls[1][0]))
+    expect(url.pathname).toBe('/v1.0/me/messages/approved%2Fid')
+    expect(url.searchParams.get('$select')).toBe(
+      'id,conversationId,internetMessageId,receivedDateTime,subject,from,body',
+    )
+    expect(String(fetch.mock.calls[1][0])).not.toMatch(
+      /bodyPreview|attachment|recipient|internetMessageHeaders/i,
+    )
+  })
+
+  it('classifies materially identical case bodies as one duplicate complaint without PII', async () => {
+    const body =
+      'Complaint Reference ID: CCC11122413\nStore Number: 350909\nCustomer Name: Private Guest\nCustomer Email: private@example.invalid\nIncident Date: 2026-08-01 1:00 PM\nComplaint: slow service'
+    const base = {
+      sender: pilotMessageSelector.senderAddress,
+      recipients: '',
+      subject: 'DBI Case # (CCC11122413) Slow Service 350909-DD',
+      textBody: body,
+    }
+    const report = await buildPilotBodyDiagnosticReport([
+      {
+        ...base,
+        id: 'approved-message-a-1234',
+        threadId: 'conversation-a',
+        internalDate: '2026-08-01T18:26:14.000Z',
+        messageIdHeader: '<a@example.invalid>',
+      },
+      {
+        ...base,
+        id: 'approved-message-b-5678',
+        threadId: 'conversation-b',
+        internalDate: '2026-08-01T18:27:50.000Z',
+        messageIdHeader: '<b@example.invalid>',
+      },
+    ])
+    expect(report).toMatchObject({
+      classification: 'DUPLICATE',
+      structuredFieldsMatch: true,
+      complaintTextFingerprintsMatch: true,
+      internetMessageIdsMatch: false,
+      canonicalMessageId: 'appr…1234',
+      duplicateMessageId: 'appr…5678',
+      candidateA: { caseId: 'CCC11122413', storeId: '350909', category: 'Service' },
+      candidateB: { caseId: 'CCC11122413', storeId: '350909', category: 'Service' },
+    })
+    const serialized = JSON.stringify(report)
+    expect(serialized).not.toContain('Private Guest')
+    expect(serialized).not.toContain('private@example.invalid')
+    expect(serialized).not.toContain('slow service')
+  })
+
+  it('classifies changed body data for the same case as a follow-up', async () => {
+    const base = {
+      sender: pilotMessageSelector.senderAddress,
+      recipients: '',
+      subject: 'CCC11122413 Slow Service 350909-DD',
+      messageIdHeader: '<provider@example.invalid>',
+    }
+    const report = await buildPilotBodyDiagnosticReport([
+      {
+        ...base,
+        id: 'approved-message-a-1234',
+        threadId: 'conversation-a',
+        internalDate: '2026-08-01T18:26:14.000Z',
+        textBody:
+          'Complaint Reference ID: CCC11122413\nStore Number: 350909\nComplaint: slow service',
+      },
+      {
+        ...base,
+        id: 'approved-message-b-5678',
+        threadId: 'conversation-b',
+        internalDate: '2026-08-01T18:27:50.000Z',
+        textBody:
+          'Complaint Reference ID: CCC11122413\nStore Number: 350909\nComplaint: slow service with updated details',
+      },
+    ])
+    expect(report.classification).toBe('FOLLOW_UP')
+    expect(report.complaintTextFingerprintsMatch).toBe(false)
   })
 
   it('keeps non-matching subjects as inspected metadata but excludes them as candidates', async () => {
