@@ -354,6 +354,19 @@ app.get('/api/admin/email/pilot-diagnostic', async (c) => {
   }
 })
 
+app.get('/api/admin/email/pilot-uniqueness-diagnostic', (c) => {
+  const user = c.get('user')
+  if (!canAdmin(user)) return c.json(jsonError('Owner access required'), 403)
+  return c.html(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>StoreResolve metadata diagnostic</title></head>
+<body><main><h1>Metadata-only uniqueness diagnostic</h1>
+<p>This reads at most ten August 1 message metadata records. It does not read message bodies or run ingestion.</p>
+<form method="post" action="/api/admin/email/pilot-uniqueness-diagnostic">
+<button type="submit">Run metadata diagnostic once</button>
+</form></main></body></html>`)
+})
+
 app.post('/api/admin/email/pilot-uniqueness-diagnostic', async (c) => {
   const user = c.get('user')
   if (!canAdmin(user)) return c.json(jsonError('Owner access required'), 403)
