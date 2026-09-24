@@ -410,7 +410,6 @@ export class MicrosoftGraphProvider implements EmailProvider {
 
   async findPilotBodyDiagnosticCandidates(): Promise<PilotUniquenessMetadata[]> {
     const params = new URLSearchParams({
-      $search: `"subject:${pilotMessageSelector.caseId}"`,
       $filter: [
         `receivedDateTime ge ${pilotUniquenessDiagnostic.receivedStart}`,
         `receivedDateTime lt ${pilotUniquenessDiagnostic.receivedEnd}`,

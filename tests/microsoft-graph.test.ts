@@ -513,7 +513,7 @@ describe('Microsoft Graph delegated mail provider', () => {
     ).resolves.toHaveLength(2)
     const url = new URL(String(fetch.mock.calls[1][0]))
     expect(url.pathname).toBe('/v1.0/me/messages')
-    expect(url.searchParams.get('$search')).toBe('"subject:CCC11122413"')
+    expect(url.searchParams.has('$search')).toBe(false)
     expect(url.searchParams.get('$filter')).toContain(
       `from/emailAddress/address eq '${pilotMessageSelector.senderAddress}'`,
     )
