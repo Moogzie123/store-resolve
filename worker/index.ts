@@ -42,6 +42,7 @@ type Bindings = Env & {
   MS_REFRESH_TOKEN?: string
   MS_MAILBOX_ADDRESS?: string
   MS_TENANT?: string
+  PILOT_MAIL_TOOLING_ENABLED?: string
 }
 type Variables = { user: User }
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -274,6 +275,13 @@ app.put('/api/admin/config', zValidator('json', configSchema), async (c) => {
   await persistState(c.env.DB, state)
   await auditAdminChange(c.env.DB, 'SETTINGS_CHANGED', 'operational-settings', user.id)
   return c.json(publicState(await loadState(c.env.DB), user))
+})
+
+// Historical pilot tools remain available for audited recovery only. They are isolated from the
+// production surface unless an operator deliberately enables the server-side binding.
+app.use('/api/admin/email/pilot-*', async (c, next) => {
+  if (c.env.PILOT_MAIL_TOOLING_ENABLED !== 'true') return c.json(jsonError('Not found'), 404)
+  await next()
 })
 
 app.post('/api/admin/email/pilot-ingest', async (c) => {
@@ -547,6 +555,7 @@ app.post('/api/admin/email/pilot-case-pair-ingest', async (c) => {
 })
 
 app.get('/diagnostics/pilot-mail', (c) => {
+  if (c.env.PILOT_MAIL_TOOLING_ENABLED !== 'true') return c.text('Not found', 404)
   const url = new URL(c.req.url)
   url.pathname = '/api/admin/email/pilot-diagnostic'
   return app.fetch(new Request(url, { headers: c.req.raw.headers }), c.env)
@@ -788,6 +797,23 @@ export async function dispatchEligible(env: Bindings, state: AppState) {
         n.providerMessageId = result.providerMessageId
         n.status = result.status
         n.sentAt = new Date().toISOString()
+        if (result.status === 'SENT') {
+          const sentAt = n.sentAt
+          const isManager = recipient.id === complaint.assignedManagerId
+          complaint.events.push({
+            id: `evt-${crypto.randomUUID()}`,
+            complaintId: complaint.id,
+            type: isManager ? 'MANAGER_NOTIFIED' : 'OWNER_NOTIFIED',
+            actor: 'system',
+            timestamp: sentAt,
+            metadata: {
+              notificationId: n.id,
+              provider: 'SIGNALWIRE',
+              providerMessageId: result.providerMessageId,
+            },
+          })
+          if (isManager) complaint.managerNotifiedAt = sentAt
+        }
       } catch (error) {
         n.status = 'FAILED'
         n.failedAt = new Date().toISOString()

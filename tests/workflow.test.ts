@@ -84,6 +84,11 @@ describe('independent notification safety', () => {
       true,
     )
     expect(notifications.some((n) => n.status === 'PENDING' || n.status === 'SENT')).toBe(false)
+    const events = create().complaint.events.map((event) => event.type)
+    expect(events).toContain('OWNER_NOTIFICATION_SUPPRESSED')
+    expect(events).not.toContain('OWNER_NOTIFIED')
+    expect(events).toContain('MANAGER_NOTIFICATION_SUPPRESSED')
+    expect(events).not.toContain('MANAGER_NOTIFIED')
   })
   it('never permits PILOT_ADMIN in complaint delivery, even in FULL mode', () => {
     const pilotAdmin = state.users.find((u) => u.recipientKind === 'PILOT_ADMIN')!
@@ -165,6 +170,21 @@ describe('manager workflow and authorization', () => {
   })
 })
 describe('deadlines and reporting', () => {
+  it('preserves historical timestamps without starting SLA work for backfill or test intake', () => {
+    for (const ingestionMode of ['BACKFILL', 'TEST'] as const) {
+      const result = createComplaint(state, input, received, { ingestionMode, acknowledged: false })
+      const processed = processDeadlines(result.state, '2026-09-01T00:00:00.000Z')
+      expect(processed.complaints[0].ingestionMode).toBe(ingestionMode)
+      expect(processed.complaints[0].operationalStartedAt).toBeUndefined()
+      expect(processed.complaints[0].isAckOverdue).toBe(false)
+      expect(processed.complaints[0].isResolutionOverdue).toBe(false)
+      expect(
+        processed.complaints[0].notifications.every(
+          (notification) => notification.status === 'SUPPRESSED',
+        ),
+      ).toBe(true)
+    }
+  })
   it('marks missed acknowledgment overdue, emits three alerts, and is idempotent', () => {
     const r = create()
     const once = processDeadlines(r.state, '2026-08-11T13:00:00.000Z')

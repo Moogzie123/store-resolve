@@ -96,11 +96,20 @@ function notifyOwners(
   message: string,
   now: string,
 ) {
-  for (const owner of state.users.filter(
-    (user) => user.complaintNotificationsEnabled && user.recipientKind !== 'PILOT_ADMIN',
-  ))
-    complaint.notifications.push(notification(state, complaint, owner.id, type, message, now))
-  complaint.events.push(event(complaint.id, 'OWNER_NOTIFIED', 'system', now, { reason: type }))
+  const notifications = state.users
+    .filter((user) => user.complaintNotificationsEnabled && user.recipientKind !== 'PILOT_ADMIN')
+    .map((owner) => notification(state, complaint, owner.id, type, message, now))
+  complaint.notifications.push(...notifications)
+  const planned = notifications.some((item) => item.status === 'PENDING')
+  complaint.events.push(
+    event(
+      complaint.id,
+      planned ? 'OWNER_NOTIFICATION_PLANNED' : 'OWNER_NOTIFICATION_SUPPRESSED',
+      'system',
+      now,
+      { reason: type, notificationCount: notifications.length },
+    ),
+  )
 }
 
 export function createComplaint(
@@ -111,6 +120,7 @@ export function createComplaint(
     source?: 'MANUAL' | 'GMAIL' | 'MICROSOFT_GRAPH'
     actor?: string
     acknowledged?: boolean
+    ingestionMode?: 'LIVE' | 'BACKFILL' | 'TEST'
   } = {},
 ): { state: AppState; complaint: Complaint; duplicate: boolean } {
   const next = structuredClone(state)
@@ -127,6 +137,8 @@ export function createComplaint(
   const internalCase = `SR-${new Date(now).getUTCFullYear()}-${String(next.complaints.length + 1).padStart(4, '0')}`
   const acknowledged = options.acknowledged ?? true
   const actor = options.actor ?? 'simulator'
+  const ingestionMode = options.ingestionMode ?? 'LIVE'
+  const operationalStartedAt = ingestionMode === 'LIVE' ? now : undefined
   const complaint: Complaint = {
     id: complaintId,
     externalCaseId: input.externalCaseId.trim(),
@@ -145,19 +157,20 @@ export function createComplaint(
       : `No match for store number: ${input.storeNumber}`,
     routingConfidence: store ? 'HIGH' : 'REVIEW',
     receivedAt: now,
+    ingestionMode,
+    operationalStartedAt,
     dunkinAcknowledgedAt: acknowledged ? now : undefined,
     acknowledgementStatus: acknowledged ? 'SENT' : 'DISABLED',
     acknowledgementBody: acknowledgementTemplate(internalCase),
-    managerNotifiedAt: store ? now : undefined,
     ackDeadline: plus(
-      now,
+      operationalStartedAt ?? now,
       state.config.managerAckDeadlineMinutes ?? ackMinutes[input.severity],
       'minute',
     ),
     resolutionDeadline:
       (state.config.managerResolutionTargetHours ?? resolutionHours[input.severity])
         ? plus(
-            now,
+            operationalStartedAt ?? now,
             state.config.managerResolutionTargetHours ?? resolutionHours[input.severity]!,
             'hour',
           )
@@ -189,17 +202,26 @@ export function createComplaint(
     now,
   )
   if (store) {
-    complaint.notifications.push(
-      notification(
-        next,
-        complaint,
-        store.managerId,
-        'MANAGER_NOTIFIED',
-        `New complaint ${complaint.id} requires your acknowledgment.`,
+    const managerNotification = notification(
+      next,
+      complaint,
+      store.managerId,
+      'MANAGER_NOTIFIED',
+      `New complaint ${complaint.id} requires your acknowledgment.`,
+      now,
+    )
+    complaint.notifications.push(managerNotification)
+    complaint.events.push(
+      event(
+        complaint.id,
+        managerNotification.status === 'PENDING'
+          ? 'MANAGER_NOTIFICATION_PLANNED'
+          : 'MANAGER_NOTIFICATION_SUPPRESSED',
+        'system',
         now,
+        { notificationId: managerNotification.id },
       ),
     )
-    complaint.events.push(event(complaint.id, 'MANAGER_NOTIFIED', 'system', now))
   }
   next.complaints.unshift(complaint)
   return { state: next, complaint, duplicate: false }
@@ -301,6 +323,7 @@ export function updateComplaint(
 export function processDeadlines(state: AppState, now = new Date().toISOString()): AppState {
   const next = structuredClone(state)
   for (const c of next.complaints) {
+    if (c.ingestionMode !== 'LIVE' || !c.operationalStartedAt) continue
     if (!c.managerAcknowledgedAt && new Date(now) > new Date(c.ackDeadline) && !c.isAckOverdue) {
       c.isAckOverdue = true
       c.events.push(event(c.id, 'MANAGER_ACK_OVERDUE', 'system', now))

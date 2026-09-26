@@ -1,5 +1,22 @@
 # StoreResolve architecture
 
+## Intelligent Mail Intake v1 foundation
+
+Milestone 1 introduces an additive, provider-neutral persistence boundary without enabling mail
+discovery or AI. `mail_source_messages` keeps immutable transport identity and a raw-content
+reference rather than a large payload. `mail_processing_runs` keeps versioned normalization,
+deterministic evidence, future model provenance, and validation results. Canonical mail events and
+complaint-source links are committed through bounded D1 batches.
+
+The scheduled Worker remains the v1 orchestrator. Future discovery, intake processing, SLA, and
+outbound phases use independent D1 work state and leases; no Cloudflare Queue is required. The
+repository interfaces deliberately do not depend on the scheduler so a queue transport can be
+substituted later.
+
+Complaint identity precedence is exact Dunkin case/reference ID first. Graph conversation identity
+is only a hint when no business case ID exists. `BACKFILL` and `TEST` sources preserve provider
+timestamps but have no operational SLA start and cannot create external side effects.
+
 ## Runtime and data flow
 
 StoreResolve is a single Cloudflare Worker deployment. It contains:

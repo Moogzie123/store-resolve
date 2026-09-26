@@ -245,6 +245,7 @@ describe('durable Gmail ingestion and acknowledgment idempotency', () => {
       '0003_pilot_admin_recipient.sql',
       '0004_v1_operations.sql',
       '0005_microsoft_graph_provider.sql',
+      '0006_intelligent_mail_foundation.sql',
     ]) {
       const path = fileURLToPath(new URL(`../drizzle/${name}`, import.meta.url))
       await db.exec(await readFile(path, 'utf8'))

@@ -12,13 +12,18 @@ export type Status =
 export type NotificationStatus =
   'PENDING' | 'SENT' | 'DELIVERED' | 'FAILED' | 'UNDELIVERED' | 'SUPPRESSED'
 export type RolloutMode = 'MOCK' | 'FAMILY_PILOT' | 'SINGLE_STORE_PILOT' | 'FULL'
+export type IngestionMode = 'LIVE' | 'BACKFILL' | 'TEST'
 export type EventType =
   | 'COMPLAINT_RECEIVED'
   | 'FOLLOW_UP_RECEIVED'
   | 'STORE_ASSIGNED'
   | 'ROUTING_REVIEW_REQUIRED'
   | 'DUNKIN_ACKNOWLEDGED'
+  | 'OWNER_NOTIFICATION_PLANNED'
+  | 'OWNER_NOTIFICATION_SUPPRESSED'
   | 'OWNER_NOTIFIED'
+  | 'MANAGER_NOTIFICATION_PLANNED'
+  | 'MANAGER_NOTIFICATION_SUPPRESSED'
   | 'MANAGER_NOTIFIED'
   | 'MANAGER_ACKNOWLEDGED'
   | 'MANAGER_ACK_OVERDUE'
@@ -102,6 +107,8 @@ export interface Complaint {
   routingReason: string
   routingConfidence: 'HIGH' | 'REVIEW'
   receivedAt: string
+  ingestionMode: IngestionMode
+  operationalStartedAt?: string
   dunkinAcknowledgedAt?: string
   acknowledgementStatus?: 'DISABLED' | 'PENDING' | 'IN_FLIGHT' | 'SENT' | 'FAILED'
   acknowledgementBody: string

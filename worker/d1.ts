@@ -127,6 +127,8 @@ export async function loadState(db: D1Database): Promise<AppState> {
     routingReason: String(r.routing_reason),
     routingConfidence: r.routing_confidence as Complaint['routingConfidence'],
     receivedAt: String(r.received_at),
+    ingestionMode: (r.ingestion_mode ?? 'LIVE') as Complaint['ingestionMode'],
+    operationalStartedAt: r.operational_started_at ? String(r.operational_started_at) : undefined,
     dunkinAcknowledgedAt: r.dunkin_acknowledged_at ? String(r.dunkin_acknowledged_at) : undefined,
     acknowledgementStatus: (r.acknowledgement_status ??
       'DISABLED') as Complaint['acknowledgementStatus'],
@@ -207,7 +209,7 @@ export async function persistState(db: D1Database, state: AppState): Promise<voi
     statements.push(
       db
         .prepare(
-          `INSERT INTO complaints (id,external_case_id,store_id,assigned_manager_id,subject,complaint_text,category,severity,status,is_ack_overdue,is_resolution_overdue,routing_reason,routing_confidence,received_at,dunkin_acknowledged_at,acknowledgment_body,manager_notified_at,manager_acknowledged_at,investigation_started_at,resolution_submitted_at,closed_at,closed_by,ack_deadline,resolution_deadline,manager_findings,customer_contacted,customer_contacted_at,customer_contact_outcome,corrective_action,resolution_notes,follow_ups,created_at,updated_at,source,gmail_message_id,gmail_thread_id,source_sender,customer_name,customer_email,customer_phone,occurrence_at,acknowledgement_status,owner_reviewed_at,reopened_at,reopen_reason,owner_notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET store_id=excluded.store_id,assigned_manager_id=excluded.assigned_manager_id,status=excluded.status,is_ack_overdue=excluded.is_ack_overdue,is_resolution_overdue=excluded.is_resolution_overdue,dunkin_acknowledged_at=excluded.dunkin_acknowledged_at,acknowledgment_body=excluded.acknowledgment_body,acknowledgement_status=excluded.acknowledgement_status,manager_acknowledged_at=excluded.manager_acknowledged_at,investigation_started_at=excluded.investigation_started_at,resolution_submitted_at=excluded.resolution_submitted_at,closed_at=excluded.closed_at,closed_by=excluded.closed_by,owner_reviewed_at=excluded.owner_reviewed_at,reopened_at=excluded.reopened_at,reopen_reason=excluded.reopen_reason,owner_notes=excluded.owner_notes,manager_findings=excluded.manager_findings,customer_contacted=excluded.customer_contacted,customer_contacted_at=excluded.customer_contacted_at,customer_contact_outcome=excluded.customer_contact_outcome,corrective_action=excluded.corrective_action,resolution_notes=excluded.resolution_notes,follow_ups=excluded.follow_ups,updated_at=excluded.updated_at`,
+          `INSERT INTO complaints (id,external_case_id,store_id,assigned_manager_id,subject,complaint_text,category,severity,status,is_ack_overdue,is_resolution_overdue,routing_reason,routing_confidence,received_at,ingestion_mode,operational_started_at,dunkin_acknowledged_at,acknowledgment_body,manager_notified_at,manager_acknowledged_at,investigation_started_at,resolution_submitted_at,closed_at,closed_by,ack_deadline,resolution_deadline,manager_findings,customer_contacted,customer_contacted_at,customer_contact_outcome,corrective_action,resolution_notes,follow_ups,created_at,updated_at,source,gmail_message_id,gmail_thread_id,source_sender,customer_name,customer_email,customer_phone,occurrence_at,acknowledgement_status,owner_reviewed_at,reopened_at,reopen_reason,owner_notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET store_id=excluded.store_id,assigned_manager_id=excluded.assigned_manager_id,status=excluded.status,is_ack_overdue=excluded.is_ack_overdue,is_resolution_overdue=excluded.is_resolution_overdue,ingestion_mode=excluded.ingestion_mode,operational_started_at=excluded.operational_started_at,dunkin_acknowledged_at=excluded.dunkin_acknowledged_at,acknowledgment_body=excluded.acknowledgment_body,acknowledgement_status=excluded.acknowledgement_status,manager_notified_at=excluded.manager_notified_at,manager_acknowledged_at=excluded.manager_acknowledged_at,investigation_started_at=excluded.investigation_started_at,resolution_submitted_at=excluded.resolution_submitted_at,closed_at=excluded.closed_at,closed_by=excluded.closed_by,owner_reviewed_at=excluded.owner_reviewed_at,reopened_at=excluded.reopened_at,reopen_reason=excluded.reopen_reason,owner_notes=excluded.owner_notes,manager_findings=excluded.manager_findings,customer_contacted=excluded.customer_contacted,customer_contacted_at=excluded.customer_contacted_at,customer_contact_outcome=excluded.customer_contact_outcome,corrective_action=excluded.corrective_action,resolution_notes=excluded.resolution_notes,follow_ups=excluded.follow_ups,updated_at=excluded.updated_at`,
         )
         .bind(
           c.id,
@@ -224,6 +226,8 @@ export async function persistState(db: D1Database, state: AppState): Promise<voi
           c.routingReason,
           c.routingConfidence,
           c.receivedAt,
+          c.ingestionMode,
+          c.operationalStartedAt ?? null,
           c.dunkinAcknowledgedAt ?? null,
           c.acknowledgementBody || null,
           c.managerNotifiedAt ?? null,

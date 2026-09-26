@@ -1,5 +1,13 @@
 # Operations
 
+## Intelligent Mail Intake foundation safety
+
+The foundation schema does not activate automatic discovery, AI, acknowledgments, or notifications.
+Expired `PROCESSING` leases are resumable as a new versioned processing run; active leases are not
+stolen. Historical complaint `SR-2026-0001` is marked `BACKFILL` with no operational SLA start while
+its existing complaint and audit history remain intact. Historical pilot mail routes are disabled
+unless the server-only `PILOT_MAIL_TOOLING_ENABLED=true` binding is deliberately configured.
+
 ## Controls and rollout modes
 
 - `email_ingestion_enabled`: permits scheduled Microsoft Graph reads and complaint ingestion.

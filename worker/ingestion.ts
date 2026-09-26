@@ -14,6 +14,8 @@ import {
 } from './microsoft-graph'
 
 export type EmailProcessingStatus =
+  | 'PROCESSING'
+  | 'IN_PROGRESS'
   | 'PROCESSED'
   | 'IGNORED'
   | 'ROUTING_REVIEW'
@@ -453,10 +455,22 @@ export async function ingestEmailMessage(
 ): Promise<{ status: EmailProcessingStatus; complaintId?: string }> {
   const now = new Date().toISOString()
   const prior = await db
-    .prepare('SELECT processing_status,complaint_id FROM gmail_messages WHERE gmail_message_id=?')
+    .prepare(
+      'SELECT processing_status,complaint_id,updated_at FROM gmail_messages WHERE gmail_message_id=?',
+    )
     .bind(message.id)
-    .first<{ processing_status: EmailProcessingStatus; complaint_id: string | null }>()
-  if (prior && !['FAILED_PARSING', 'FAILED_PERSISTENCE'].includes(prior.processing_status))
+    .first<{
+      processing_status: EmailProcessingStatus
+      complaint_id: string | null
+      updated_at: string
+    }>()
+  const legacyLeaseCutoff = Date.now() - 5 * 60_000
+  if (prior?.processing_status === 'PROCESSING' && Date.parse(prior.updated_at) > legacyLeaseCutoff)
+    return { status: 'IN_PROGRESS', complaintId: prior.complaint_id ?? undefined }
+  if (
+    prior &&
+    !['PROCESSING', 'FAILED_PARSING', 'FAILED_PERSISTENCE'].includes(prior.processing_status)
+  )
     return { status: 'DUPLICATE', complaintId: prior.complaint_id ?? undefined }
   if (!prior)
     await db
@@ -476,6 +490,13 @@ export async function ingestEmailMessage(
         now,
         now,
       )
+      .run()
+  else
+    await db
+      .prepare(
+        `UPDATE gmail_messages SET processing_status='PROCESSING',processing_detail=NULL,updated_at=? WHERE gmail_message_id=?`,
+      )
+      .bind(now, message.id)
       .run()
   try {
     const extraction = extractComplaint(message)
@@ -501,7 +522,9 @@ export async function ingestEmailMessage(
           .bind(extraction.externalCaseId)
           .first<{ id: string }>()
       : null
-    const existingId = threaded?.complaint_id ?? referenced?.id
+    // A supplied business case identity is authoritative. Conversation identity is only a hint
+    // when no case/reference ID exists and can never override a case ID.
+    const existingId = extraction.externalCaseId ? referenced?.id : threaded?.complaint_id
     if (existingId) {
       const row = await db
         .prepare('SELECT follow_ups FROM complaints WHERE id=?')
@@ -711,7 +734,7 @@ export async function pollEmail(
     try {
       const message = await emailProvider.getMessage(id)
       const result = await ingestEmailMessage(db, message)
-      if (result.status !== 'DUPLICATE') processed += 1
+      if (!['DUPLICATE', 'IN_PROGRESS'].includes(result.status)) processed += 1
       if (result.complaintId && config.emailAckEnabled)
         await acknowledgeComplaint(db, emailProvider, result.complaintId, config)
     } catch {
