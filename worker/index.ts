@@ -26,7 +26,7 @@ import {
 import { buildPilotUniquenessReport } from './pilot-uniqueness'
 import { buildPilotBodyDiagnosticReport } from './pilot-body-diagnostic'
 import { EmailProviderError } from './email-provider'
-import { ingestSinglePilotComplaint } from './ingestion'
+import { ingestApprovedPilotCasePair, ingestSinglePilotComplaint } from './ingestion'
 import { runScheduledOperations } from './operations'
 import { buildReport } from './reporting'
 
@@ -517,6 +517,32 @@ app.post('/api/admin/email/pilot-body-diagnostic', async (c) => {
           ? error.message
           : 'MS_GRAPH_BODY_DIAGNOSTIC_FAILED'
     return c.json({ ok: false, error: code }, 503)
+  }
+})
+
+app.get('/api/admin/email/pilot-case-pair-ingest', (c) => {
+  const user = c.get('user')
+  if (!canAdmin(user)) return c.json(jsonError('Owner access required'), 403)
+  return c.html(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>StoreResolve controlled case ingestion</title></head>
+<body><main><h1>Controlled case CCC11122413 ingestion</h1>
+<p>This ingests only the approved initial source AAkA…DQAA and follow-up AAkA…EQAA. Acknowledgments and external SMS must remain off.</p>
+<form method="post" action="/api/admin/email/pilot-case-pair-ingest">
+<button type="submit">Ingest the approved source pair once</button>
+</form></main></body></html>`)
+})
+
+app.post('/api/admin/email/pilot-case-pair-ingest', async (c) => {
+  const user = c.get('user')
+  if (!canAdmin(user)) return c.json(jsonError('Owner access required'), 403)
+  const state = await loadState(c.env.DB)
+  try {
+    const result = await ingestApprovedPilotCasePair(c.env.DB, emailProvider(c.env), state.config)
+    return c.json({ ok: true, ...result })
+  } catch (error) {
+    const code = error instanceof EmailProviderError ? error.code : 'MS_GRAPH_PILOT_PAIR_FAILED'
+    return c.json(jsonError(code), 409)
   }
 })
 

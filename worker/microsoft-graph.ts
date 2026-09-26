@@ -418,7 +418,11 @@ export class MicrosoftGraphProvider implements EmailProvider {
       $select: 'id,conversationId,parentFolderId,subject,receivedDateTime,from',
       $top: '3',
     })
-    const page = await this.request<{ value?: GraphMessage[] }>(`/me/messages?${params.toString()}`)
+    const page = await this.request<{ value?: GraphMessage[] }>(
+      `/me/messages?${params.toString()}`,
+      {},
+      false,
+    )
     return (page.value ?? []).flatMap((message) => {
       const senderAddress = message.from?.emailAddress?.address?.trim() ?? ''
       if (
@@ -470,6 +474,8 @@ export class MicrosoftGraphProvider implements EmailProvider {
     ].join(',')
     const message = await this.request<GraphMessage>(
       `/me/messages/${encodeURIComponent(id)}?$select=${encodeURIComponent(select)}`,
+      {},
+      false,
     )
     return normalizeGraphMessage(message)
   }

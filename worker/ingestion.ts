@@ -6,7 +6,10 @@ import type { EmailProvider, NormalizedEmailMessage } from './email-provider'
 import { EmailProviderError } from './email-provider'
 import {
   isApprovedPilotMessageMetadata,
+  maskGraphIdentifier,
+  pilotBodyDiagnosticCandidates,
   pilotMessageSelector,
+  type PilotUniquenessMetadata,
   type MicrosoftGraphProvider,
 } from './microsoft-graph'
 
@@ -115,10 +118,11 @@ async function recordIntegrationEvent(
   entityId: string,
   outcome: string,
   detailCode?: string,
+  metadata?: Record<string, unknown>,
 ) {
   await db
     .prepare(
-      'INSERT INTO integration_events(id,integration,event_type,entity_id,outcome,detail_code,metadata,created_at) VALUES(?,?,?,?,?,?,NULL,?)',
+      'INSERT INTO integration_events(id,integration,event_type,entity_id,outcome,detail_code,metadata,created_at) VALUES(?,?,?,?,?,?,?,?)',
     )
     .bind(
       crypto.randomUUID(),
@@ -127,24 +131,13 @@ async function recordIntegrationEvent(
       entityId,
       outcome,
       detailCode ?? null,
+      metadata ? JSON.stringify(metadata) : null,
       new Date().toISOString(),
     )
     .run()
 }
 
-export async function ingestSinglePilotComplaint(
-  db: D1Database,
-  emailProvider: MicrosoftGraphProvider,
-  config: AppConfig,
-): Promise<{
-  accessed: boolean
-  status?: EmailProcessingStatus
-  complaintId?: string
-  messageId?: string
-  conversationId?: string
-  matchCount?: 0 | 1 | '2+'
-  inspectedCount?: number
-}> {
+const requirePilotSafety = (config: AppConfig) => {
   if (config.mode !== 'FAMILY_PILOT')
     throw new EmailProviderError(
       'MS_GRAPH_PILOT_MODE_REQUIRED',
@@ -165,6 +158,201 @@ export async function ingestSinglePilotComplaint(
       'MS_GRAPH_BROAD_INGESTION_MUST_BE_OFF',
       'Scheduled email ingestion must remain disabled during the controlled test',
     )
+}
+
+const approvedPairIdentityMatches = (
+  candidate: PilotUniquenessMetadata,
+  message: NormalizedEmailMessage,
+) =>
+  message.id === candidate.id &&
+  message.threadId === candidate.conversationId &&
+  message.internalDate === new Date(candidate.receivedDateTime).toISOString() &&
+  Boolean(message.messageIdHeader) &&
+  (message.sender.trim().toLowerCase() === pilotMessageSelector.senderAddress ||
+    message.sender.toLowerCase().endsWith(`<${pilotMessageSelector.senderAddress}>`))
+
+export async function ingestApprovedPilotCasePair(
+  db: D1Database,
+  emailProvider: MicrosoftGraphProvider,
+  config: AppConfig,
+): Promise<{
+  accessedCount: 2
+  complaintId: string
+  initialStatus: EmailProcessingStatus
+  followUpStatus: EmailProcessingStatus
+  initialMessageId: string
+  followUpMessageId: string
+  caseId: string
+  rawStoreId: string
+  normalizedStoreId: string
+}> {
+  requirePilotSafety(config)
+  if (!emailProvider.ready)
+    throw new EmailProviderError('MS_GRAPH_NOT_CONFIGURED', 'Microsoft Graph is not configured')
+
+  await emailProvider.verifyConnection()
+  const priorDiagnostic = await db
+    .prepare(
+      `SELECT detail_code,metadata FROM integration_events WHERE integration='MICROSOFT_GRAPH' AND event_type='PILOT_BODY_DIAGNOSTIC' ORDER BY created_at DESC LIMIT 1`,
+    )
+    .first<{ detail_code: string; metadata: string }>()
+  let diagnosticMetadata: {
+    classification?: string
+    candidateA?: { messageId?: string }
+    candidateB?: { messageId?: string }
+  } = {}
+  try {
+    diagnosticMetadata = priorDiagnostic?.metadata ? JSON.parse(priorDiagnostic.metadata) : {}
+  } catch {
+    throw new EmailProviderError(
+      'MS_GRAPH_PILOT_DIAGNOSTIC_INVALID',
+      'The approved body diagnostic record was invalid',
+    )
+  }
+  if (
+    priorDiagnostic?.detail_code !== 'FOLLOW_UP' ||
+    diagnosticMetadata.classification !== 'FOLLOW_UP' ||
+    diagnosticMetadata.candidateA?.messageId !== pilotBodyDiagnosticCandidates[0].maskedId ||
+    diagnosticMetadata.candidateB?.messageId !== pilotBodyDiagnosticCandidates[1].maskedId
+  )
+    throw new EmailProviderError(
+      'MS_GRAPH_PILOT_DIAGNOSTIC_REQUIRED',
+      'The approved two-message FOLLOW_UP diagnostic was not available',
+    )
+
+  const candidates = (await emailProvider.findPilotBodyDiagnosticCandidates()).sort(
+    (left, right) => Date.parse(left.receivedDateTime) - Date.parse(right.receivedDateTime),
+  )
+  const selectionMatches =
+    candidates.length === pilotBodyDiagnosticCandidates.length &&
+    candidates.every(
+      (candidate, index) =>
+        maskGraphIdentifier(candidate.id) === pilotBodyDiagnosticCandidates[index].maskedId &&
+        candidate.receivedDateTime === pilotBodyDiagnosticCandidates[index].receivedDateTime,
+    )
+  if (!selectionMatches)
+    throw new EmailProviderError(
+      'MS_GRAPH_PILOT_PAIR_SELECTION_CHANGED',
+      'The approved two-message selection changed',
+    )
+
+  const existingComplaint = await db
+    .prepare('SELECT id FROM complaints WHERE lower(external_case_id)=lower(?)')
+    .bind(pilotMessageSelector.caseId)
+    .first<{ id: string }>()
+  const existingSources = await db
+    .prepare('SELECT gmail_message_id FROM gmail_messages WHERE gmail_message_id IN (?,?)')
+    .bind(candidates[0].id, candidates[1].id)
+    .all<{ gmail_message_id: string }>()
+  if (existingComplaint || existingSources.results.length)
+    throw new EmailProviderError(
+      'MS_GRAPH_PILOT_CASE_ALREADY_PRESENT',
+      'The approved case or one of its source messages was already persisted',
+    )
+
+  const initialMessage = await emailProvider.getPilotBodyDiagnosticMessage(candidates[0].id)
+  const followUpMessage = await emailProvider.getPilotBodyDiagnosticMessage(candidates[1].id)
+  if (
+    !approvedPairIdentityMatches(candidates[0], initialMessage) ||
+    !approvedPairIdentityMatches(candidates[1], followUpMessage)
+  )
+    throw new EmailProviderError(
+      'MS_GRAPH_PILOT_PAIR_IDENTITY_MISMATCH',
+      'An approved Microsoft Graph message no longer matched its diagnosed identity',
+    )
+  const initialExtraction = extractComplaint(initialMessage)
+  const followUpExtraction = extractComplaint(followUpMessage)
+  const normalizedInitialStore = initialExtraction.storeNumber?.replace(/\D/g, '')
+  const normalizedFollowUpStore = followUpExtraction.storeNumber?.replace(/\D/g, '')
+  if (
+    !initialExtraction.isComplaint ||
+    !followUpExtraction.isComplaint ||
+    initialExtraction.externalCaseId !== pilotMessageSelector.caseId ||
+    followUpExtraction.externalCaseId !== pilotMessageSelector.caseId ||
+    normalizedInitialStore !== '350909' ||
+    normalizedFollowUpStore !== '350909'
+  )
+    throw new EmailProviderError(
+      'MS_GRAPH_PILOT_PAIR_PARSE_MISMATCH',
+      'The approved messages no longer parsed as the diagnosed case and store',
+    )
+
+  const attemptId = crypto.randomUUID()
+  const startedAt = new Date().toISOString()
+  const claimed = await db
+    .prepare(
+      `UPDATE background_job_locks SET locked_until='9999-12-30T23:59:59.999Z',owner_run_id=?,updated_at=? WHERE job_name='EMAIL_PILOT' AND locked_until='9999-12-31T23:59:59.999Z'`,
+    )
+    .bind(attemptId, startedAt)
+    .run()
+  if (Number(claimed.meta?.changes ?? 0) !== 1)
+    throw new EmailProviderError(
+      'MS_GRAPH_PILOT_LOCK_RESET_FAILED',
+      'The previous one-shot lock was not available for the approved reset',
+    )
+  await recordIntegrationEvent(db, 'PILOT_INGESTION_LOCK_RESET', attemptId, 'SUCCESS')
+  await recordIntegrationEvent(db, 'PILOT_CASE_PAIR_INGESTION_STARTED', attemptId, 'SUCCESS')
+
+  const initial = await ingestEmailMessage(db, initialMessage)
+  if (initial.status !== 'ROUTING_REVIEW' || !initial.complaintId)
+    throw new EmailProviderError(
+      'MS_GRAPH_PILOT_INITIAL_RESULT_MISMATCH',
+      'The initial source did not create the expected routing-review complaint',
+    )
+  await db
+    .prepare(
+      `UPDATE gmail_messages SET acknowledgment_status='DISABLED',updated_at=? WHERE gmail_message_id=?`,
+    )
+    .bind(new Date().toISOString(), initialMessage.id)
+    .run()
+  const followUp = await ingestEmailMessage(db, followUpMessage)
+  if (followUp.status !== 'FOLLOW_UP' || followUp.complaintId !== initial.complaintId)
+    throw new EmailProviderError(
+      'MS_GRAPH_PILOT_FOLLOW_UP_RESULT_MISMATCH',
+      'The later source did not attach as a follow-up to the initial complaint',
+    )
+  await recordIntegrationEvent(
+    db,
+    'PILOT_CASE_PAIR_INGESTION_COMPLETED',
+    initial.complaintId,
+    'SUCCESS',
+    'FOLLOW_UP',
+    {
+      attemptId,
+      caseId: pilotMessageSelector.caseId,
+      rawStoreId: pilotMessageSelector.storeToken,
+      normalizedStoreId: '350909',
+      initialMessageId: maskGraphIdentifier(initialMessage.id),
+      followUpMessageId: maskGraphIdentifier(followUpMessage.id),
+    },
+  )
+  return {
+    accessedCount: 2,
+    complaintId: initial.complaintId,
+    initialStatus: initial.status,
+    followUpStatus: followUp.status,
+    initialMessageId: maskGraphIdentifier(initialMessage.id),
+    followUpMessageId: maskGraphIdentifier(followUpMessage.id),
+    caseId: pilotMessageSelector.caseId,
+    rawStoreId: pilotMessageSelector.storeToken,
+    normalizedStoreId: '350909',
+  }
+}
+
+export async function ingestSinglePilotComplaint(
+  db: D1Database,
+  emailProvider: MicrosoftGraphProvider,
+  config: AppConfig,
+): Promise<{
+  accessed: boolean
+  status?: EmailProcessingStatus
+  complaintId?: string
+  messageId?: string
+  conversationId?: string
+  matchCount?: 0 | 1 | '2+'
+  inspectedCount?: number
+}> {
+  requirePilotSafety(config)
   if (!emailProvider.ready)
     throw new EmailProviderError('MS_GRAPH_NOT_CONFIGURED', 'Microsoft Graph is not configured')
 

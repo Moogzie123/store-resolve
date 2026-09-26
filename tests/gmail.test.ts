@@ -10,11 +10,17 @@ import {
   type GmailApiMessage,
   type NormalizedGmailMessage,
 } from '../worker/gmail'
-import { acknowledgeComplaint, extractComplaint, ingestGmailMessage } from '../worker/ingestion'
+import {
+  acknowledgeComplaint,
+  extractComplaint,
+  ingestApprovedPilotCasePair,
+  ingestGmailMessage,
+} from '../worker/ingestion'
 import { loadState } from '../worker/d1'
 import { buildReport } from '../worker/reporting'
 import { runScheduledOperations } from '../worker/operations'
 import type { SignalWireSmsProvider } from '../worker/providers'
+import type { MicrosoftGraphProvider } from '../worker/microsoft-graph'
 
 const base64url = (value: string) =>
   Buffer.from(value).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
@@ -292,6 +298,149 @@ describe('durable Gmail ingestion and acknowledgment idempotency', () => {
       { gmail_message_id: 'source-a', complaint_id: first.complaintId },
       { gmail_message_id: 'source-b', complaint_id: first.complaintId },
     ])
+  })
+
+  it('ingests only the diagnosed source pair as one routing-review complaint and one follow-up', async () => {
+    const subject = 'DBI Case # (CCC11122413) - Guest Contact: Slow Service - PC 350909-DD'
+    const initial = normalized({
+      id: 'AAkA-initial-DQAA',
+      threadId: 'conversation-initial',
+      internalDate: '2026-08-01T18:26:14.000Z',
+      sender: 'customerservice@dunkinbrands.com',
+      subject,
+      messageIdHeader: '<initial@example.invalid>',
+      textBody:
+        'Complaint Reference ID: CCC11122413\nStore Number: 350909\nCustomer Name: Test Guest\nComplaint: slow service',
+    })
+    const followUp = normalized({
+      id: 'AAkA-followup-EQAA',
+      threadId: 'conversation-followup',
+      internalDate: '2026-08-01T18:27:50.000Z',
+      sender: 'customerservice@dunkinbrands.com',
+      subject,
+      messageIdHeader: '<followup@example.invalid>',
+      textBody:
+        'Complaint Reference ID: CCC11122413\nStore Number: 350909\nCustomer Name: Test Guest\nComplaint: slow service with updated details',
+    })
+    const metadata = [
+      {
+        id: initial.id,
+        conversationId: initial.threadId,
+        parentFolderId: 'inbox',
+        receivedDateTime: '2026-08-01T18:26:14Z',
+        subject,
+        senderAddress: 'customerservice@dunkinbrands.com',
+        senderMatched: true,
+        caseIdMatched: true,
+        subjectPhraseMatched: true,
+        storeNumberMatched: true,
+      },
+      {
+        id: followUp.id,
+        conversationId: followUp.threadId,
+        parentFolderId: 'inbox',
+        receivedDateTime: '2026-08-01T18:27:50Z',
+        subject,
+        senderAddress: 'customerservice@dunkinbrands.com',
+        senderMatched: true,
+        caseIdMatched: true,
+        subjectPhraseMatched: true,
+        storeNumberMatched: true,
+      },
+    ]
+    await db
+      .prepare(
+        `INSERT INTO background_job_locks(job_name,locked_until,owner_run_id,updated_at) VALUES('EMAIL_PILOT','9999-12-31T23:59:59.999Z','locked','2026-08-01T00:00:00Z')`,
+      )
+      .run()
+    await db
+      .prepare(
+        `INSERT INTO integration_events(id,integration,event_type,entity_id,outcome,detail_code,metadata,created_at) VALUES('diag','MICROSOFT_GRAPH','PILOT_BODY_DIAGNOSTIC','run','SUCCESS','FOLLOW_UP',?,'2026-08-01T19:00:00Z')`,
+      )
+      .bind(
+        JSON.stringify({
+          classification: 'FOLLOW_UP',
+          candidateA: { messageId: 'AAkA…DQAA' },
+          candidateB: { messageId: 'AAkA…EQAA' },
+        }),
+      )
+      .run()
+    const provider = {
+      ready: true,
+      verifyConnection: vi.fn().mockResolvedValue(undefined),
+      findPilotBodyDiagnosticCandidates: vi.fn().mockResolvedValue(metadata),
+      getPilotBodyDiagnosticMessage: vi.fn(async (id: string) =>
+        id === initial.id ? initial : followUp,
+      ),
+    } as unknown as MicrosoftGraphProvider
+    const result = await ingestApprovedPilotCasePair(db, provider, {
+      mode: 'FAMILY_PILOT',
+      externalNotificationsEnabled: false,
+      emailIngestionEnabled: false,
+      emailAckEnabled: false,
+    })
+    expect(result).toMatchObject({
+      accessedCount: 2,
+      initialStatus: 'ROUTING_REVIEW',
+      followUpStatus: 'FOLLOW_UP',
+      caseId: 'CCC11122413',
+      rawStoreId: '350909-DD',
+      normalizedStoreId: '350909',
+    })
+    expect(provider.getPilotBodyDiagnosticMessage).toHaveBeenNthCalledWith(1, initial.id)
+    expect(provider.getPilotBodyDiagnosticMessage).toHaveBeenNthCalledWith(2, followUp.id)
+    const complaints = await db
+      .prepare('SELECT id,external_case_id,status,store_id FROM complaints')
+      .all<{ id: string; external_case_id: string; status: string; store_id: string | null }>()
+    expect(complaints.results).toEqual([
+      {
+        id: result.complaintId,
+        external_case_id: 'CCC11122413',
+        status: 'ROUTING_REVIEW',
+        store_id: null,
+      },
+    ])
+    const sources = await db
+      .prepare(
+        'SELECT gmail_message_id,gmail_thread_id,message_id_header,processing_status,is_follow_up,acknowledgment_status,complaint_id FROM gmail_messages ORDER BY internal_date',
+      )
+      .all<Record<string, unknown>>()
+    expect(sources.results).toEqual([
+      expect.objectContaining({
+        gmail_message_id: initial.id,
+        gmail_thread_id: initial.threadId,
+        message_id_header: initial.messageIdHeader,
+        processing_status: 'ROUTING_REVIEW',
+        is_follow_up: 0,
+        acknowledgment_status: 'DISABLED',
+        complaint_id: result.complaintId,
+      }),
+      expect.objectContaining({
+        gmail_message_id: followUp.id,
+        gmail_thread_id: followUp.threadId,
+        message_id_header: followUp.messageIdHeader,
+        processing_status: 'FOLLOW_UP',
+        is_follow_up: 1,
+        acknowledgment_status: 'NOT_APPLICABLE',
+        complaint_id: result.complaintId,
+      }),
+    ])
+    const events = await db
+      .prepare('SELECT event_type FROM complaint_events WHERE complaint_id=? ORDER BY timestamp')
+      .bind(result.complaintId)
+      .all<{ event_type: string }>()
+    expect(events.results.map((event) => event.event_type)).toEqual(
+      expect.arrayContaining([
+        'COMPLAINT_RECEIVED',
+        'ROUTING_REVIEW_REQUIRED',
+        'FOLLOW_UP_RECEIVED',
+      ]),
+    )
+    await expect(
+      db
+        .prepare("SELECT locked_until FROM background_job_locks WHERE job_name='EMAIL_PILOT'")
+        .first<{ locked_until: string }>(),
+    ).resolves.toEqual({ locked_until: '9999-12-30T23:59:59.999Z' })
   })
 
   it('persists routing review and ignored states without inventing a store', async () => {
