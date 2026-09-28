@@ -103,6 +103,13 @@ function DetailView({
   const interp = parseJson(detail.interpretation_json) as Record<string, unknown> | null
   const normalized = parseJson(detail.normalized_output_json)
   const evidence = parseJson(detail.deterministic_evidence_json)
+  const readEntries = (
+    [
+      ['Store', interp?.storeNumber],
+      ['Category', interp?.issueCategory],
+      ['Urgency', interp?.urgency],
+    ] as [string, unknown][]
+  ).filter(([, value]) => value !== null && value !== undefined && value !== '')
   const kv = (label: string, value: unknown) =>
     value === null || value === undefined || value === '' ? null : (
       <div className="kv">
@@ -124,15 +131,15 @@ function DetailView({
       {typeof interp?.summary === 'string' && interp.summary.trim() !== '' && (
         <p className="review-summary">{String(interp.summary)}</p>
       )}
-      <div className="kv-grid">
-        <h4>Our read — please verify</h4>
-        {kv('Store', interp?.storeNumber)}
-        {kv('Category', interp?.issueCategory)}
-        {kv('Urgency', interp?.urgency)}
-      </div>
-      <p className="muted review-why">
-        <strong>Why you're seeing this:</strong> {reasonWhy(detail.reason_code)}
-      </p>
+      <p className="review-why">{reasonWhy(detail.reason_code)}</p>
+      {readEntries.length > 0 && (
+        <div className="kv-grid">
+          <h4>
+            Our read <span className="muted">— please verify</span>
+          </h4>
+          {readEntries.map(([label, value]) => kv(label, value))}
+        </div>
+      )}
       {isAdmin && (
         <div className="action-row">
           <input
