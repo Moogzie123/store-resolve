@@ -68,6 +68,7 @@ export default function App() {
   const [view, setView] = useState<View>('dashboard')
   const [selectedId, setSelectedId] = useState<string>()
   const [toast, setToast] = useState<string>()
+  const [sidebarOpen, setSidebarOpen] = useState(false)
   const user = state.users.find((u) => u.id === state.activeUserId)!
   const selected = state.complaints.find((c) => c.id === selectedId)
   const show = (message: string) => {
@@ -77,6 +78,7 @@ export default function App() {
   const navigate = (next: View, id?: string) => {
     setView(next)
     setSelectedId(id)
+    setSidebarOpen(false)
     window.scrollTo(0, 0)
   }
   const visibleComplaints =
@@ -119,7 +121,10 @@ export default function App() {
     )
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      {sidebarOpen && (
+        <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} />
+      )}
+      <aside className={cx('sidebar', sidebarOpen && 'open')}>
         <div className="brand">
           <span className="brand-mark">
             <Check size={18} />
@@ -207,7 +212,11 @@ export default function App() {
       </aside>
       <main>
         <header>
-          <button className="mobile-menu">
+          <button
+            className="mobile-menu"
+            onClick={() => setSidebarOpen(true)}
+            aria-label="Open menu"
+          >
             <Menu />
           </button>
           <div className="search">
