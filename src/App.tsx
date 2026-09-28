@@ -604,17 +604,17 @@ function ComplaintTable({ state, onOpen }: { state: AppState; onOpen: (id: strin
     )
   return (
     <div className="table-wrap">
-      <table>
+      <table className="complaint-table">
         <thead>
           <tr>
             <th>Case</th>
             <th>Store</th>
             <th>Category</th>
             <th>Severity</th>
-            <th>Manager</th>
+            <th className="hide-mobile">Manager</th>
             <th>Status</th>
             <th>Received</th>
-            <th></th>
+            <th className="hide-mobile"></th>
           </tr>
         </thead>
         <tbody>
@@ -632,7 +632,7 @@ function ComplaintTable({ state, onOpen }: { state: AppState; onOpen: (id: strin
                 <td>
                   <Badge tone={c.severity.toLowerCase()}>{c.severity}</Badge>
                 </td>
-                <td>{manager?.name ?? '—'}</td>
+                <td className="hide-mobile">{manager?.name ?? '—'}</td>
                 <td>
                   <Badge tone={c.isAckOverdue || c.isResolutionOverdue ? 'danger' : 'status'}>
                     {c.isAckOverdue || c.isResolutionOverdue
@@ -641,7 +641,7 @@ function ComplaintTable({ state, onOpen }: { state: AppState; onOpen: (id: strin
                   </Badge>
                 </td>
                 <td>{fmt(c.receivedAt)}</td>
-                <td>
+                <td className="hide-mobile">
                   <ChevronRight />
                 </td>
               </tr>

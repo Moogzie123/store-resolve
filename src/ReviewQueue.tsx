@@ -5,7 +5,7 @@
 // complaint id; dismissal just closes the item.
 
 import { useEffect, useState } from 'react'
-import { AlertTriangle, Check, Inbox, UserPlus, X } from 'lucide-react'
+import { Check, ChevronRight, Inbox, UserPlus } from 'lucide-react'
 import { api, type ReviewQueueDetail, type ReviewQueueItem } from './lib/api'
 import type { User } from './lib/types'
 
@@ -16,11 +16,6 @@ const parseJson = (value: unknown): unknown => {
   } catch {
     return value
   }
-}
-
-const flagsOf = (item: ReviewQueueItem): string[] => {
-  const parsed = parseJson(item.disagreement_flags_json)
-  return Array.isArray(parsed) ? parsed.map(String) : []
 }
 
 // Plain-language translations of review reason codes for family reviewers.
@@ -141,38 +136,15 @@ function DetailView({
         </div>
       )}
       {isAdmin && (
-        <div className="action-row">
+        <div className="review-actions">
           <input
-            placeholder="Resolution note (optional)"
+            placeholder="Add a note (optional)"
             value={note}
             onChange={(e) => setNote(e.target.value)}
             disabled={busy}
           />
-          <input
-            placeholder="Link to complaint ID"
-            value={linkId}
-            onChange={(e) => setLinkId(e.target.value)}
-            disabled={busy}
-          />
           <button
-            className="primary"
-            disabled={busy || !linkId.trim()}
-            onClick={() =>
-              run(
-                () =>
-                  api.resolveReviewItem(String(detail.id), {
-                    action: 'link',
-                    complaintId: linkId.trim(),
-                    note: note.trim() || undefined,
-                  }),
-                'Review item linked',
-              )
-            }
-          >
-            <Check size={14} /> Link
-          </button>
-          <button
-            className="secondary danger-btn"
+            className="primary wide"
             disabled={busy}
             onClick={() =>
               run(
@@ -181,29 +153,65 @@ function DetailView({
                     action: 'dismiss',
                     note: note.trim() || undefined,
                   }),
-                'Review item dismissed',
+                'Marked done',
               )
             }
           >
-            <X size={14} /> Dismiss
+            <Check size={16} /> Mark done
           </button>
-          <select value={assignee} onChange={(e) => setAssignee(e.target.value)} disabled={busy}>
-            <option value="">Assign to…</option>
-            {users
-              .filter((u) => u.active)
-              .map((u) => (
-                <option key={u.id} value={u.id}>
-                  {u.name} ({u.role})
-                </option>
-              ))}
-          </select>
-          <button
-            className="primary"
-            disabled={busy || !assignee}
-            onClick={() => run(() => api.assignReviewItem(String(detail.id), assignee), 'Assigned')}
-          >
-            <UserPlus size={14} /> Assign
-          </button>
+          <details className="more-actions">
+            <summary>More actions</summary>
+            <div className="action-row">
+              <input
+                placeholder="Link to complaint ID"
+                value={linkId}
+                onChange={(e) => setLinkId(e.target.value)}
+                disabled={busy}
+              />
+              <button
+                className="secondary"
+                disabled={busy || !linkId.trim()}
+                onClick={() =>
+                  run(
+                    () =>
+                      api.resolveReviewItem(String(detail.id), {
+                        action: 'link',
+                        complaintId: linkId.trim(),
+                        note: note.trim() || undefined,
+                      }),
+                    'Review item linked',
+                  )
+                }
+              >
+                Link to complaint
+              </button>
+            </div>
+            <div className="action-row">
+              <select
+                value={assignee}
+                onChange={(e) => setAssignee(e.target.value)}
+                disabled={busy}
+              >
+                <option value="">Assign to…</option>
+                {users
+                  .filter((u) => u.active)
+                  .map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.name} ({u.role})
+                    </option>
+                  ))}
+              </select>
+              <button
+                className="secondary"
+                disabled={busy || !assignee}
+                onClick={() =>
+                  run(() => api.assignReviewItem(String(detail.id), assignee), 'Assigned')
+                }
+              >
+                <UserPlus size={14} /> Assign
+              </button>
+            </div>
+          </details>
         </div>
       )}
       <details className="tech-details">
@@ -286,44 +294,23 @@ export default function ReviewQueue({
         </div>
       ) : (
         <div className="review-layout">
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Subject</th>
-                  <th>Reason</th>
-                  <th>Flags</th>
-                  <th>Received</th>
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((item) => (
-                  <tr
-                    key={item.id}
-                    onClick={() => void open(item.id)}
-                    className={selectedId === item.id ? 'selected' : ''}
-                  >
-                    <td>
-                      <strong>{item.subject}</strong>
-                      <span>{item.sender_address}</span>
-                    </td>
-                    <td>
-                      <span className="badge warning">{plainReason(item.reason_code)}</span>
-                    </td>
-                    <td>
-                      {flagsOf(item).length > 0 ? (
-                        <span className="flag-list">
-                          <AlertTriangle size={12} /> {flagsOf(item).join(', ')}
-                        </span>
-                      ) : (
-                        <span className="muted">—</span>
-                      )}
-                    </td>
-                    <td>{formatWhen(item.received_at)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="review-list">
+            {items.map((item) => (
+              <button
+                key={item.id}
+                onClick={() => void open(item.id)}
+                className={`review-card${selectedId === item.id ? ' selected' : ''}`}
+              >
+                <span className="review-card-main">
+                  <strong>{item.subject}</strong>
+                  <span className="muted">
+                    {item.sender_address} · {formatWhen(item.received_at)}
+                  </span>
+                </span>
+                <span className="badge warning">{plainReason(item.reason_code)}</span>
+                <ChevronRight size={16} className="review-card-chevron" />
+              </button>
+            ))}
           </div>
           {detail && (
             <DetailView

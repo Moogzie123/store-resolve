@@ -1389,3 +1389,139 @@ pre.json {
   padding: 8px 0;
   list-style-position: inside;
 }
+
+/* ---- Review queue: tappable cards instead of a table ---- */
+.review-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.review-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 12px 14px;
+  cursor: pointer;
+}
+.review-card:active {
+  transform: scale(0.99);
+}
+.review-card.selected {
+  border-color: #2563eb;
+  background: rgba(37, 99, 235, 0.06);
+}
+.review-card-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+.review-card-main strong {
+  font-size: 14px;
+  line-height: 1.35;
+  overflow-wrap: break-word;
+}
+.review-card-main .muted {
+  font-size: 12px;
+  overflow-wrap: break-word;
+}
+.review-card .badge {
+  flex-shrink: 0;
+}
+.review-card-chevron {
+  flex-shrink: 0;
+  color: #9ca3af;
+}
+
+/* ---- Review detail: one clear primary action ---- */
+.review-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid #e5e7eb;
+}
+.review-actions input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  padding: 12px;
+  font-size: 14px;
+}
+.review-actions .primary.wide {
+  padding: 13px;
+  font-size: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 10px;
+}
+.more-actions {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 0 12px;
+}
+.more-actions summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: #4b5563;
+  padding: 10px 0;
+  list-style-position: inside;
+}
+.more-actions .action-row {
+  border-top: none;
+  padding: 4px 0 12px;
+}
+.more-actions .action-row input,
+.more-actions .action-row select {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  padding: 10px 12px;
+}
+
+/* ---- Complaints table becomes stacked cards on phones ---- */
+@media (max-width: 640px) {
+  .complaint-table thead {
+    display: none;
+  }
+  .complaint-table,
+  .complaint-table tbody,
+  .complaint-table tr,
+  .complaint-table td {
+    display: block;
+    width: auto;
+  }
+  .complaint-table tr {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+  }
+  .complaint-table td {
+    border: none;
+    padding: 3px 0;
+    font-size: 13px;
+  }
+  .complaint-table td:first-child strong {
+    font-size: 14px;
+  }
+  .complaint-table td.hide-mobile {
+    display: none;
+  }
+  .table-wrap {
+    overflow-x: visible;
+  }
+}
