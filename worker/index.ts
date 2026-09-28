@@ -20,6 +20,7 @@ import {
 import { createComplaint, processDeadlines, updateComplaint } from '../src/lib/workflow'
 import type { AppState, User } from '../src/lib/types'
 import { authenticate, canAdmin, canViewComplaint, maskEmail, maskPhone } from './auth'
+import { REVIEW_QUEUE_DETAIL_QUERY, REVIEW_QUEUE_LIST_QUERY } from './review-queue'
 import { loadState, persistState, type D1Database } from './d1'
 import { SignalWireSmsProvider } from './providers'
 import { applySignalWireCallback, reconcileSignalWireMessage } from './callbacks'
@@ -843,39 +844,17 @@ export async function dispatchEligible(env: Bindings, state: AppState) {
 // Phase C: family review queue (mail_review_items, OPEN). Reads are available
 // to any authenticated user; resolve/assign are owner/admin-only in this
 // phase (whether store managers may resolve their own store's items is an
-// open policy question for Manav).
+// open policy question for Manav). List/detail SQL lives in
+// worker/review-queue.ts so a regression test runs it against the real schema.
 // ---------------------------------------------------------------------------
-const reviewQueueListQuery = `
-  SELECT ri.id, ri.status, ri.reason_code, ri.disagreement_flags_json, ri.created_at,
-         ms.subject, ms.sender_address, ms.received_at, ms.provider_message_id,
-         pr.interpretation_confidence, pr.interpretation_disagreements_json,
-         pr.interpretation_model, pr.interpretation_prompt_version
-  FROM mail_review_items ri
-  JOIN mail_source_messages ms ON ms.id = ri.source_message_id
-  LEFT JOIN mail_processing_runs pr ON pr.id = ri.processing_run_id
-  WHERE ri.status='OPEN'
-  ORDER BY ri.created_at DESC
-  LIMIT 100
-`
 
 app.get('/api/review-queue', async (c) => {
-  const rows = await c.env.DB.prepare(reviewQueueListQuery).all<Record<string, unknown>>()
+  const rows = await c.env.DB.prepare(REVIEW_QUEUE_LIST_QUERY).all<Record<string, unknown>>()
   return c.json({ items: rows.results })
 })
 
 app.get('/api/review-queue/:id', async (c) => {
-  const row = await c.env.DB.prepare(
-    `SELECT ri.*, ms.subject, ms.sender_address, ms.received_at, ms.provider_message_id,
-            ms.conversation_id, ms.internet_message_id,
-            pr.interpretation_model, pr.interpretation_prompt_version,
-            pr.interpretation_json, pr.interpretation_confidence,
-            pr.interpretation_disagreements_json, pr.normalized_output_json,
-            pr.deterministic_evidence_json, pr.status AS run_status
-     FROM mail_review_items ri
-     JOIN mail_source_messages ms ON ms.id = ri.source_message_id
-     LEFT JOIN mail_processing_runs pr ON pr.id = ri.processing_run_id
-     WHERE ri.id=?`,
-  )
+  const row = await c.env.DB.prepare(REVIEW_QUEUE_DETAIL_QUERY)
     .bind(c.req.param('id'))
     .first<Record<string, unknown>>()
   if (!row) return c.json(jsonError('Review item not found'), 404)
