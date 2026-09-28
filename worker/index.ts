@@ -6,6 +6,11 @@ import {
   complaintInputSchema,
   configSchema,
   contactSchema,
+  responseApprovalSchema,
+  responseDraftSchema,
+  responseTemplateSchema,
+  reviewAssignSchema,
+  reviewResolveSchema,
   signalWireCallbackSchema,
   signalWireReconcileSchema,
   storeAdminSchema,
@@ -27,6 +32,17 @@ import { buildPilotUniquenessReport } from './pilot-uniqueness'
 import { buildPilotBodyDiagnosticReport } from './pilot-body-diagnostic'
 import { EmailProviderError } from './email-provider'
 import { ingestApprovedPilotCasePair, ingestSinglePilotComplaint } from './ingestion'
+import { GraphDeltaDiscoveryClient, runMailboxDiscovery } from './mail-discovery'
+import {
+  ResponseWorkflowError,
+  approveResponseAction,
+  createResponseDraft,
+  createResponseTemplate,
+  listResponseTemplates,
+  rejectResponseAction,
+  sendResponseAction,
+  submitResponseForApproval,
+} from './response-workflow'
 import { runScheduledOperations } from './operations'
 import { buildReport } from './reporting'
 
@@ -822,6 +838,249 @@ export async function dispatchEligible(env: Bindings, state: AppState) {
     }
   await persistState(env.DB, state)
 }
+
+// ---------------------------------------------------------------------------
+// Phase C: family review queue (mail_review_items, OPEN). Reads are available
+// to any authenticated user; resolve/assign are owner/admin-only in this
+// phase (whether store managers may resolve their own store's items is an
+// open policy question for Manav).
+// ---------------------------------------------------------------------------
+const reviewQueueListQuery = `
+  SELECT ri.id, ri.status, ri.reason_code, ri.disagreement_flags_json, ri.created_at,
+         ms.subject, ms.sender_address, ms.received_at, ms.provider_message_id,
+         pr.interpretation_confidence, pr.interpretation_disagreements_json,
+         pr.interpretation_model, pr.interpretation_prompt_version
+  FROM mail_review_items ri
+  JOIN mail_source_messages ms ON ms.id = ri.source_message_id
+  LEFT JOIN mail_processing_runs pr ON pr.id = ri.processing_run_id
+  WHERE ri.status='OPEN'
+  ORDER BY ri.created_at DESC
+  LIMIT 100
+`
+
+app.get('/api/review-queue', async (c) => {
+  const rows = await c.env.DB.prepare(reviewQueueListQuery).all<Record<string, unknown>>()
+  return c.json({ items: rows.results })
+})
+
+app.get('/api/review-queue/:id', async (c) => {
+  const row = await c.env.DB.prepare(
+    `SELECT ri.*, ms.subject, ms.sender_address, ms.received_at, ms.provider_message_id,
+            ms.conversation_id, ms.internet_message_id,
+            pr.interpretation_model, pr.interpretation_prompt_version,
+            pr.interpretation_json, pr.interpretation_confidence,
+            pr.interpretation_disagreements_json, pr.normalized_output_json,
+            pr.deterministic_evidence_json, pr.status AS run_status
+     FROM mail_review_items ri
+     JOIN mail_source_messages ms ON ms.id = ri.source_message_id
+     LEFT JOIN mail_processing_runs pr ON pr.id = ri.processing_run_id
+     WHERE ri.id=?`,
+  )
+    .bind(c.req.param('id'))
+    .first<Record<string, unknown>>()
+  if (!row) return c.json(jsonError('Review item not found'), 404)
+  return c.json({ item: row })
+})
+
+app.post('/api/review-queue/:id/resolve', zValidator('json', reviewResolveSchema), async (c) => {
+  const user = c.get('user')
+  if (!canAdmin(user)) return c.json(jsonError('Owner access required'), 403)
+  const body = c.req.valid('json')
+  // Identity rule: a review resolution may LINK to an existing complaint or
+  // DISMISS the item. It can never create a complaint or an identity here.
+  if (body.action === 'link') {
+    if (!body.complaintId) return c.json(jsonError('complaintId is required to link'), 400)
+    const target = await c.env.DB.prepare('SELECT id FROM complaints WHERE id=?')
+      .bind(body.complaintId)
+      .first<{ id: string }>()
+    if (!target) return c.json(jsonError('Complaint not found'), 404)
+  }
+  const now = new Date().toISOString()
+  const resolution = {
+    action: body.action,
+    complaintId: body.complaintId ?? null,
+    note: body.note ?? null,
+    resolvedBy: user.id,
+    resolvedAt: now,
+  }
+  // When linking, also update the item's complaint_id column (not just the
+  // resolution JSON) so downstream joins stay correct.
+  const updated = await c.env.DB.prepare(
+    `UPDATE mail_review_items SET status='RESOLVED',resolution_json=?,reviewed_by=?,resolved_at=?,
+     complaint_id=CASE WHEN ? IS NOT NULL THEN ? ELSE complaint_id END,updated_at=?
+     WHERE id=? AND status='OPEN'`,
+  )
+    .bind(
+      JSON.stringify(resolution),
+      user.id,
+      now,
+      body.complaintId ?? null,
+      body.complaintId ?? null,
+      now,
+      c.req.param('id'),
+    )
+    .run()
+  if (Number(updated.meta?.changes ?? 0) !== 1)
+    return c.json(jsonError('Review item not found or already resolved'), 404)
+  return c.json({ ok: true, resolution })
+})
+
+app.post('/api/review-queue/:id/assign', zValidator('json', reviewAssignSchema), async (c) => {
+  const user = c.get('user')
+  if (!canAdmin(user)) return c.json(jsonError('Owner access required'), 403)
+  const body = c.req.valid('json')
+  const assignee = await c.env.DB.prepare('SELECT id FROM users WHERE id=? AND active=1')
+    .bind(body.assigneeUserId)
+    .first<{ id: string }>()
+  if (!assignee) return c.json(jsonError('Assignee not found'), 404)
+  const now = new Date().toISOString()
+  const updated = await c.env.DB.prepare(
+    `UPDATE mail_review_items SET reviewed_by=?,updated_at=? WHERE id=? AND status='OPEN'`,
+  )
+    .bind(body.assigneeUserId, now, c.req.param('id'))
+    .run()
+  if (Number(updated.meta?.changes ?? 0) !== 1)
+    return c.json(jsonError('Review item not found or not open'), 404)
+  return c.json({ ok: true, assigneeUserId: body.assigneeUserId })
+})
+
+// ---------------------------------------------------------------------------
+// Phase C: response templates + approval-gated ack/response workflow.
+// Draft -> human approve -> send. Sending is disabled in this phase.
+// ---------------------------------------------------------------------------
+app.get('/api/response-templates', async (c) => {
+  return c.json({ templates: await listResponseTemplates(c.env.DB) })
+})
+
+app.post('/api/response-templates', zValidator('json', responseTemplateSchema), async (c) => {
+  const user = c.get('user')
+  if (!canAdmin(user)) return c.json(jsonError('Owner access required'), 403)
+  const body = c.req.valid('json')
+  const template = await createResponseTemplate(c.env.DB, body)
+  return c.json({ ok: true, template })
+})
+
+app.post(
+  '/api/complaints/:id/response-drafts',
+  zValidator('json', responseDraftSchema),
+  async (c) => {
+    const user = c.get('user')
+    if (!canAdmin(user)) return c.json(jsonError('Owner access required'), 403)
+    try {
+      const draft = await createResponseDraft(c.env.DB, {
+        complaintId: c.req.param('id'),
+        ...c.req.valid('json'),
+      })
+      return c.json({ ok: true, draft })
+    } catch (error) {
+      if (error instanceof ResponseWorkflowError)
+        return c.json(
+          jsonError(error.code),
+          error.code === 'COMPLAINT_NOT_FOUND' ? 404 : 400,
+        )
+      throw error
+    }
+  },
+)
+
+app.post(
+  '/api/response-actions/:id/approve',
+  zValidator('json', responseApprovalSchema),
+  async (c) => {
+    const user = c.get('user')
+    if (!canAdmin(user)) return c.json(jsonError('Owner access required'), 403)
+    try {
+      // Approval is attributed to the authenticated reviewer, never a body field.
+      const action = await approveResponseAction(c.env.DB, {
+        id: c.req.param('id'),
+        approvedBy: user.id,
+      })
+      return c.json({ ok: true, action })
+    } catch (error) {
+      if (error instanceof ResponseWorkflowError)
+        return c.json(
+          jsonError(error.code),
+          error.code === 'ACTION_NOT_FOUND' ? 404 : 400,
+        )
+      throw error
+    }
+  },
+)
+
+app.post('/api/response-actions/:id/submit', async (c) => {
+  const user = c.get('user')
+  if (!canAdmin(user)) return c.json(jsonError('Owner access required'), 403)
+  try {
+    const action = await submitResponseForApproval(c.env.DB, c.req.param('id'))
+    return c.json({ ok: true, action })
+  } catch (error) {
+    if (error instanceof ResponseWorkflowError)
+      return c.json(
+        jsonError(error.code),
+        error.code === 'ACTION_NOT_FOUND' ? 404 : 400,
+      )
+    throw error
+  }
+})
+
+app.post('/api/response-actions/:id/reject', async (c) => {
+  const user = c.get('user')
+  if (!canAdmin(user)) return c.json(jsonError('Owner access required'), 403)
+  try {
+    const action = await rejectResponseAction(c.env.DB, {
+      id: c.req.param('id'),
+      rejectedBy: user.id,
+    })
+    return c.json({ ok: true, action })
+  } catch (error) {
+    if (error instanceof ResponseWorkflowError)
+      return c.json(
+        jsonError(error.code),
+        error.code === 'ACTION_NOT_FOUND' ? 404 : 400,
+      )
+    throw error
+  }
+})
+
+app.post('/api/response-actions/:id/send', async (c) => {  const user = c.get('user')
+  if (!canAdmin(user)) return c.json(jsonError('Owner access required'), 403)
+  const state = await loadState(c.env.DB)
+  try {
+    await sendResponseAction(c.env.DB, {
+      id: c.req.param('id'),
+      emailAckEnabled: state.config.emailAckEnabled === true,
+    })
+    return c.json({ ok: true })
+  } catch (error) {
+    if (error instanceof ResponseWorkflowError) {
+      const status = error.code === 'SEND_DISABLED' ? 403 : error.code === 'ACTION_NOT_FOUND' ? 404 : 409
+      return c.json(jsonError(error.code), status as 403 | 404 | 409)
+    }
+    throw error
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Phase C: manual delta-discovery trigger. Cron stays disabled; this is an
+// explicit admin action, and discovery itself refuses to run unless
+// email_ingestion_enabled=true.
+// ---------------------------------------------------------------------------
+app.post('/api/admin/email/discover', async (c) => {
+  const user = c.get('user')
+  if (!canAdmin(user)) return c.json(jsonError('Owner access required'), 403)
+  const state = await loadState(c.env.DB)
+  if (!state.config.emailIngestionEnabled)
+    return c.json({ ok: false, ran: false, reason: 'INGESTION_DISABLED' })
+  const graph = emailProvider(c.env)
+  if (!graph.ready) return c.json(jsonError('MS_GRAPH_NOT_CONFIGURED'), 503)
+  const result = await runMailboxDiscovery(c.env.DB, {
+    provider: 'MICROSOFT_GRAPH',
+    mailboxKey: 'production',
+    ingestionEnabled: true,
+    client: new GraphDeltaDiscoveryClient(graph),
+  })
+  return c.json({ ok: result.ran, ...result })
+})
 
 app.all('/api/*', (c) => c.json(jsonError('API route not found'), 404))
 app.get('*', (c) =>

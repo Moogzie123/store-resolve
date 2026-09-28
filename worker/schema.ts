@@ -397,3 +397,15 @@ export const outboundDeliveries = sqliteTable('outbound_deliveries', {
   sentAt: text('sent_at'),
   deliveredAt: text('delivered_at'),
 })
+
+export const responseTemplates = sqliteTable('response_templates', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  responseKind: text('response_kind').notNull(),
+  subjectTemplate: text('subject_template'),
+  bodyTemplate: text('body_template').notNull(),
+  version: integer('version').notNull().default(1),
+  active: integer('active').notNull().default(1),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+})

@@ -8,6 +8,7 @@ import {
   CircleGauge,
   Clock3,
   FileText,
+  Inbox,
   LayoutDashboard,
   Menu,
   Plus,
@@ -19,11 +20,20 @@ import {
 } from 'lucide-react'
 import { metrics } from './lib/workflow'
 import { api } from './lib/api'
+import ReviewQueue from './ReviewQueue'
 import { fixtures, initialState } from './lib/seed'
 import type { AppState, Complaint, IntegrationHealth, NewComplaint, Severity } from './lib/types'
 
 type View =
-  'dashboard' | 'complaints' | 'simulator' | 'detail' | 'stores' | 'team' | 'reports' | 'settings'
+  | 'dashboard'
+  | 'complaints'
+  | 'simulator'
+  | 'detail'
+  | 'stores'
+  | 'team'
+  | 'reports'
+  | 'settings'
+  | 'review'
 const fmt = (value?: string) =>
   value
     ? new Intl.DateTimeFormat('en-US', {
@@ -141,6 +151,10 @@ export default function App() {
             </button>
           )}
           <div className="nav-label">Operations</div>
+          <button className={cx(view === 'review' && 'active')} onClick={() => navigate('review')}>
+            <Inbox />
+            Review queue
+          </button>
           <button className={cx(view === 'stores' && 'active')} onClick={() => navigate('stores')}>
             <StoreIcon />
             Stores
@@ -217,6 +231,13 @@ export default function App() {
               state={{ ...state, complaints: visibleComplaints }}
               onOpen={(id) => navigate('detail', id)}
               onCreate={() => navigate('simulator')}
+            />
+          )}
+          {view === 'review' && (
+            <ReviewQueue
+              users={state.users}
+              isAdmin={user.role === 'OWNER' || user.role === 'ADMIN'}
+              show={show}
             />
           )}
           {view === 'complaints' && (

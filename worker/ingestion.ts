@@ -30,6 +30,12 @@ import {
   type PilotUniquenessMetadata,
   type MicrosoftGraphProvider,
 } from './microsoft-graph'
+import {
+  LogNotificationTransport,
+  NotificationService,
+  criticalEscalationEvent,
+  loadNotificationConfig,
+} from './notifications'
 
 export type EmailProcessingStatus =
   | 'PROCESSING'
@@ -511,6 +517,14 @@ export interface IngestEmailMessageOptions {
   interpreter?: MailInterpreter
   /** Overrides the settings-table config (tests inject enabled configs directly). */
   interpretationConfig?: MailInterpretationConfig
+  /**
+   * Overrides the notification service (tests inject a recording transport).
+   * Default is built from the settings table and is inert unless
+   * external_notifications_enabled='true'.
+   */
+  notificationService?: NotificationService
+  /** Skips the settings-table notification config load when a service is injected. */
+  skipNotificationConfigLoad?: boolean
 }
 
 export async function ingestEmailMessage(
@@ -779,6 +793,34 @@ export async function ingestEmailMessage(
         routingReason: route.reason,
       } satisfies Partial<Complaint>)
       await persistState(db, result.state)
+      // Phase C: critical-escalation notification hook. Inert by default
+      // (external_notifications_enabled=false -> notify() is a no-op that never
+      // touches a transport). Notifications must never break ingestion.
+      if (extraction.severity === 'CRITICAL') {
+        try {
+          const notifier =
+            options.notificationService ??
+            new NotificationService(
+              options.skipNotificationConfigLoad
+                ? { enabled: false, targets: [] }
+                : await loadNotificationConfig(db),
+              [new LogNotificationTransport()],
+            )
+          await notifier.notify(
+            criticalEscalationEvent({
+              complaintId: result.complaint.id,
+              severity: extraction.severity,
+              summary: `${extraction.category}: ${message.subject}`,
+              metadata: {
+                externalCaseId: caseId,
+                storeNumber: route.storeNumber ?? null,
+              },
+            }),
+          )
+        } catch {
+          // Notification failures are logged by the transport; ingestion continues.
+        }
+      }
       const status: EmailProcessingStatus = result.complaint.storeId
         ? 'PROCESSED'
         : 'ROUTING_REVIEW'
