@@ -169,6 +169,27 @@ describe('Milestone 1 intake seam', () => {
     expect(sources.results).toEqual([{ source_role: 'INITIAL', linkage_basis: 'NEW_CASE_ID' }])
   })
 
+  it('routes a corporate email to the store named by its PC number', async () => {
+    // Seed migration 0002 already carries store-2 with dunkin_store_number 41002.
+    const result = await ingestEmailMessage(
+      db,
+      message({
+        id: 'graph-pc-1',
+        threadId: 'thread-pc-1',
+        subject: 'DBI Case # (CCC99901) - Guest Contact: Cold Coffee',
+        messageIdHeader: '<graph-pc-1@example.invalid>',
+        textBody:
+          'DBI Case # (CCC99901)\nGuest Contact: Cold Coffee\nPC: 41002\nComplaint: coffee served cold twice this week',
+      }),
+    )
+    expect(result.status).toBe('PROCESSED')
+    const complaint = await db
+      .prepare('SELECT id,store_id,external_case_id FROM complaints WHERE external_case_id=?')
+      .bind('CCC99901')
+      .first<{ id: string; store_id: string | null; external_case_id: string }>()
+    expect(complaint?.store_id).toBe('store-2')
+  })
+
   it('is idempotent across duplicate deliveries of the same provider message', async () => {
     const first = await ingestEmailMessage(db, message())
     expect(first.status).toBe('PROCESSED')

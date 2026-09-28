@@ -121,6 +121,12 @@ export function extractComplaint(message: NormalizedEmailMessage): ComplaintExtr
       match(combined, /\b(?:case|reference)\s*[:#-]\s*([A-Z0-9][A-Z0-9-]{2,50})/i, 'CASE_ID_INLINE') ??
       match(combined, /\bDBI\s+Case\s*#\s*\(\s*([A-Z0-9][A-Z0-9-]{2,50})\s*\)/i, 'CASE_ID_DBI_PARENS'),
     storeNumber:
+      match(combined, /\bPC\s*(?:number|no\.?|#)?\s*[:#.-]?\s*(\d{3,8})\b/i, 'STORE_NUMBER_PC') ??
+      match(
+        combined,
+        /\bprofit\s*center\s*(?:number|no\.?|#)?\s*[:#.-]?\s*(\d{3,8})\b/i,
+        'STORE_NUMBER_PROFIT_CENTER',
+      ) ??
       match(combined, /\b(?:store|location)\s*(?:number|no\.?|#)?\s*[:#-]?\s*(\d{3,8})\b/i, 'STORE_NUMBER_LABELED') ??
       match(combined, /\b(\d{3,8})-DD\b/i, 'STORE_NUMBER_DD_SUFFIX'),
     locationHint: match(combined, /\b(?:store address|location|address)\s*:\s*([^\n]{4,160})/i, 'LOCATION_HINT'),
