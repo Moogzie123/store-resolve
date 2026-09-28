@@ -226,8 +226,8 @@ describe('output validation', () => {
       validOutput({ issueCategory: 'Billing' as never }),
       validOutput({ urgency: 'URGENT' as never }),
       validOutput({ confidence: 1.5 }),
-      validOutput({ storeNumber: '41001', storeConfidence: null }),
       validOutput({ storeNumber: null, storeConfidence: 0.5 }),
+      validOutput({ storeNumber: '41001', storeConfidence: 1.5 }),
       validOutput({ summary: 'x'.repeat(501) }),
       validOutput({ evidenceQuotes: ['a', 'b', 'c', 'd', 'e'] }),
       validOutput({ schemaVersion: 'wrong' as never }),
@@ -235,6 +235,13 @@ describe('output validation', () => {
     ]) {
       expect(validateInterpretationOutput(bad).valid).toBe(false)
     }
+  })
+
+  it('accepts null storeConfidence with a storeNumber (surfaced as LOW_CONFIDENCE)', () => {
+    const result = validateInterpretationOutput(validOutput({ storeNumber: '41001', storeConfidence: null }))
+    expect(result.valid).toBe(true)
+    const disagreements = detectDisagreements(testInput(), result.output, [])
+    expect(disagreements.map((d) => d.code)).toContain('LOW_CONFIDENCE')
   })
 
   it('rejects non-JSON-shaped input', () => {
@@ -393,7 +400,7 @@ describe('OpenAiMailInterpreter', () => {
     const request = interpreter.buildRequest(testInput())
     expect(request.model).toBe('gpt-4o-mini')
     expect(request.temperature).toBe(0)
-    expect(request.responseFormat).toBe('json_object')
+    expect(request.response_format).toEqual({ type: 'json_object' })
     expect(request.messages).toHaveLength(2)
     expect(request.messages[0]?.role).toBe('system')
     expect(request.messages[1]?.role).toBe('user')
