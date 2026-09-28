@@ -189,6 +189,14 @@ export function normalizeGraphMessage(message: GraphMessage): NormalizedEmailMes
   }
 }
 
+export interface InboxDeltaPage {
+  messages: GraphMessage[]
+  /** Present while more pages remain; pass back to continue paging. */
+  nextLink?: string
+  /** Present on the final page; persist as the discovery cursor. */
+  deltaLink?: string
+}
+
 export class MicrosoftGraphProvider implements EmailProvider {
   constructor(private readonly config: MicrosoftGraphConfig) {}
 
@@ -233,7 +241,9 @@ export class MicrosoftGraphProvider implements EmailProvider {
     const attempts = retryReads && method === 'GET' ? 3 : 1
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       const token = await this.accessToken()
-      const response = await fetch(`${GRAPH_ROOT}${path}`, {
+      // Delta links returned by Graph are absolute URLs; request paths are relative.
+      const url = /^https?:\/\//i.test(path) ? path : `${GRAPH_ROOT}${path}`
+      const response = await fetch(url, {
         ...init,
         headers: {
           authorization: `Bearer ${token}`,
@@ -532,8 +542,43 @@ export class MicrosoftGraphProvider implements EmailProvider {
     )
   }
 
-  async listMessageIds(lookbackDays: number, maxResults = 25): Promise<string[]> {
-    const since = new Date(
+  /**
+   * Incremental inbox discovery via Graph delta query. Pass the persisted
+   * deltaLink (or nextLink) to continue; the final page returns a fresh
+   * deltaLink to persist as the cursor. No live calls happen unless the
+   * caller invokes this — tests use a fake DeltaDiscoveryClient instead.
+   */
+  async listInboxDeltaPage(link?: string): Promise<InboxDeltaPage> {
+    const select = [
+      'id',
+      'conversationId',
+      'internetMessageId',
+      'receivedDateTime',
+      'subject',
+      'from',
+      'sender',
+      'toRecipients',
+      'ccRecipients',
+      'body',
+      'bodyPreview',
+      'internetMessageHeaders',
+    ].join(',')
+    const path =
+      link ??
+      `/me/mailFolders/inbox/messages/delta?$select=${encodeURIComponent(select)}&$top=25`
+    const page = await this.request<{
+      value?: GraphMessage[]
+      '@odata.nextLink'?: string
+      '@odata.deltaLink'?: string
+    }>(path)
+    return {
+      messages: page.value ?? [],
+      nextLink: page['@odata.nextLink'],
+      deltaLink: page['@odata.deltaLink'],
+    }
+  }
+
+  async listMessageIds(lookbackDays: number, maxResults = 25): Promise<string[]> {    const since = new Date(
       Date.now() - Math.max(1, Math.min(365, lookbackDays)) * 86_400_000,
     ).toISOString()
     const params = new URLSearchParams({

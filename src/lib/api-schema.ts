@@ -73,3 +73,28 @@ export const userAdminSchema = z.object({
   timezone: z.string().trim().min(1).max(100).optional(),
   storeIds: z.array(z.string().trim().min(1).max(100)).max(50).optional(),
 })
+
+// Phase C: family review queue
+export const reviewResolveSchema = z.object({
+  action: z.enum(['dismiss', 'link']),
+  complaintId: z.string().trim().min(1).max(100).optional(),
+  note: z.string().trim().max(2000).optional(),
+})
+export const reviewAssignSchema = z.object({
+  assigneeUserId: z.string().trim().min(1).max(100),
+})
+
+// Phase C: response templates + approval-gated workflow
+export const responseTemplateSchema = z.object({
+  name: z.string().trim().min(1).max(200),
+  responseKind: z.string().trim().min(1).max(100),
+  subjectTemplate: z.string().trim().max(500).optional(),
+  bodyTemplate: z.string().trim().min(1).max(20000),
+})
+export const responseDraftSchema = z.object({
+  responseKind: z.string().trim().min(1).max(100).optional(),
+  templateId: z.string().trim().min(1).max(100).optional(),
+  templateVars: z.record(z.string(), z.string().max(2000)).optional(),
+  body: z.string().trim().min(1).max(20000).optional(),
+})
+export const responseApprovalSchema = z.object({})

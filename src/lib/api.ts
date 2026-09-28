@@ -37,7 +37,47 @@ const pilotEmailSchema = z.object({
   matchCount: z.union([z.literal(0), z.literal(1), z.literal('2+')]).optional(),
   inspectedCount: z.number().int().min(0).max(3).optional(),
 })
+export interface ReviewQueueItem {
+  id: string
+  status: string
+  reason_code: string
+  disagreement_flags_json: string | null
+  created_at: string
+  subject: string
+  sender_address: string
+  received_at: string
+  provider_message_id: string
+  interpretation_confidence: number | null
+  interpretation_disagreements_json: string | null
+  interpretation_model: string | null
+  interpretation_prompt_version: string | null
+}
+export interface ReviewQueueDetail extends Record<string, unknown> {
+  id: string
+  reason_code: string
+  subject: string
+  sender_address: string
+}
+const reviewQueueSchema = z.object({ items: z.array(z.custom<ReviewQueueItem>()) })
+const reviewDetailSchema = z.object({ item: z.custom<ReviewQueueDetail>() })
+const reviewResolveSchema = z.object({
+  ok: z.literal(true),
+  resolution: z.custom<Record<string, unknown>>(),
+})
+const reviewAssignSchema = z.object({ ok: z.literal(true), assigneeUserId: z.string() })
 export const api = {
+  reviewQueue: () => request('/review-queue', reviewQueueSchema),
+  reviewItem: (id: string) => request(`/review-queue/${encodeURIComponent(id)}`, reviewDetailSchema),
+  resolveReviewItem: (id: string, body: { action: 'dismiss' | 'link'; complaintId?: string; note?: string }) =>
+    request(`/review-queue/${encodeURIComponent(id)}/resolve`, reviewResolveSchema, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  assignReviewItem: (id: string, assigneeUserId: string) =>
+    request(`/review-queue/${encodeURIComponent(id)}/assign`, reviewAssignSchema, {
+      method: 'POST',
+      body: JSON.stringify({ assigneeUserId }),
+    }),
   bootstrap: () => request('/bootstrap', bootstrapSchema),
   createComplaint: (input: NewComplaint) =>
     request('/complaints', stateSchema, {
