@@ -4,7 +4,7 @@
 // Resolve/link never fabricates identity: linking requires an existing
 // complaint id; dismissal just closes the item.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Check, ChevronRight, Inbox, UserPlus } from 'lucide-react'
 import { api, type ReviewQueueDetail, type ReviewQueueItem } from './lib/api'
 import type { User } from './lib/types'
@@ -244,6 +244,7 @@ export default function ReviewQueue({
   const [selectedId, setSelectedId] = useState<string>()
   const [detail, setDetail] = useState<ReviewQueueDetail | null>(null)
   const [loading, setLoading] = useState(true)
+  const detailRef = useRef<HTMLDivElement>(null)
   const refresh = async () => {
     setLoading(true)
     try {
@@ -272,6 +273,13 @@ export default function ReviewQueue({
       show(error instanceof Error ? error.message : 'Failed to load item')
     }
   }
+  // On narrow screens the detail renders below the list — bring it into view
+  // once it has committed.
+  useEffect(() => {
+    if (detail && window.matchMedia('(max-width: 1100px)').matches) {
+      detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+  }, [detail])
   return (
     <div>
       <div className="page-head">
@@ -313,15 +321,17 @@ export default function ReviewQueue({
             ))}
           </div>
           {detail && (
-            <DetailView
-              detail={detail}
-              users={users}
-              isAdmin={isAdmin}
-              show={show}
-              onDone={() => {
-                void refresh()
-              }}
-            />
+            <div ref={detailRef} className="review-detail-anchor">
+              <DetailView
+                detail={detail}
+                users={users}
+                isAdmin={isAdmin}
+                show={show}
+                onDone={() => {
+                  void refresh()
+                }}
+              />
+            </div>
           )}
         </div>
       )}
