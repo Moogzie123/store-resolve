@@ -5,6 +5,11 @@ import { loadState, persistState } from './d1'
 import type { EmailProvider, NormalizedEmailMessage } from './email-provider'
 import { EmailProviderError } from './email-provider'
 import {
+  D1MailFoundationRepository,
+  type CanonicalEventCommit,
+  type IngestionMode,
+} from './mail-foundation'
+import {
   isApprovedPilotMessageMetadata,
   maskGraphIdentifier,
   pilotBodyDiagnosticCandidates,
@@ -19,6 +24,7 @@ export type EmailProcessingStatus =
   | 'PROCESSED'
   | 'IGNORED'
   | 'ROUTING_REVIEW'
+  | 'REVIEW_REQUIRED'
   | 'DUPLICATE'
   | 'FOLLOW_UP'
   | 'FAILED_PARSING'
@@ -449,30 +455,88 @@ export async function ingestSinglePilotComplaint(
   }
 }
 
+// --- Milestone 1 intake seam -------------------------------------------------
+// Single intake path through the intelligent-mail foundation. Transport identity is the
+// Graph source message (UNIQUE(provider, mailbox_key, provider_message_id)); business
+// identity is the extracted Dunkin case ID, which always outranks conversation hints.
+// A message with no resolvable identity NEVER fabricates a business case ID: it becomes
+// a reviewable provisional intake (mail_review_items, OPEN) for a human to resolve.
+// The GPT interpretation stage stays stubbed: deterministic stages only, no model calls.
+
+const GRAPH_MAILBOX_KEY = 'production'
+const INTAKE_LEASE_MS = 5 * 60_000
+const NORMALIZATION_VERSION = 'deterministic.v1'
+const MAIL_EVENT_VERSION = 'mail-event.v1'
+
 export async function ingestEmailMessage(
   db: D1Database,
   message: NormalizedEmailMessage,
+  options: { ingestionMode?: IngestionMode } = {},
 ): Promise<{ status: EmailProcessingStatus; complaintId?: string }> {
   const now = new Date().toISOString()
-  const prior = await db
-    .prepare(
-      'SELECT processing_status,complaint_id,updated_at FROM gmail_messages WHERE gmail_message_id=?',
-    )
+  const ingestionMode = options.ingestionMode ?? 'LIVE'
+  const foundation = new D1MailFoundationRepository(db)
+
+  // Stage 1 — immutable source persistence. INSERT OR IGNORE on the transport identity:
+  // a duplicate delivery can never create a second source row.
+  const inserted = await foundation.persistDiscovered({
+    id: message.id,
+    provider: 'MICROSOFT_GRAPH',
+    mailboxKey: GRAPH_MAILBOX_KEY,
+    providerMessageId: message.id,
+    internetMessageId: message.messageIdHeader,
+    conversationId: message.threadId,
+    direction: 'INBOUND',
+    receivedAt: message.internalDate,
+    discoveredAt: now,
+    subject: message.subject,
+    senderAddress: message.sender,
+    recipients: message.recipients
+      .split(/[,;]/)
+      .map((recipient) => recipient.trim())
+      .filter(Boolean),
+    ingestionMode,
+  })
+  if (!inserted) {
+    const row = await db
+      .prepare('SELECT processing_state,lease_expires_at FROM mail_source_messages WHERE id=?')
+      .bind(message.id)
+      .first<{ processing_state: string; lease_expires_at: string | null }>()
+    const leaseActive =
+      row?.processing_state === 'PROCESSING' &&
+      row.lease_expires_at !== null &&
+      row.lease_expires_at > now
+    if (leaseActive) return { status: 'IN_PROGRESS' }
+    const resumable =
+      row?.processing_state === 'DISCOVERED' ||
+      row?.processing_state === 'RETRY_WAIT' ||
+      row?.processing_state === 'PROCESSING'
+    if (!resumable) {
+      const link = await db
+        .prepare('SELECT complaint_id FROM complaint_sources WHERE source_message_id=? LIMIT 1')
+        .bind(message.id)
+        .first<{ complaint_id: string | null }>()
+      const legacy = link
+        ? null
+        : await db
+            .prepare('SELECT complaint_id FROM gmail_messages WHERE gmail_message_id=?')
+            .bind(message.id)
+            .first<{ complaint_id: string | null }>()
+      return {
+        status: 'DUPLICATE',
+        complaintId: link?.complaint_id ?? legacy?.complaint_id ?? undefined,
+      }
+    }
+    // A previous attempt never finished and holds no live lease: resume through the
+    // lease acquisition below.
+  }
+
+  // Legacy message row: the acknowledgment lookup and pilot observability read this table.
+  const priorMessage = await db
+    .prepare('SELECT gmail_message_id FROM gmail_messages WHERE gmail_message_id=?')
     .bind(message.id)
-    .first<{
-      processing_status: EmailProcessingStatus
-      complaint_id: string | null
-      updated_at: string
-    }>()
-  const legacyLeaseCutoff = Date.now() - 5 * 60_000
-  if (prior?.processing_status === 'PROCESSING' && Date.parse(prior.updated_at) > legacyLeaseCutoff)
-    return { status: 'IN_PROGRESS', complaintId: prior.complaint_id ?? undefined }
-  if (
-    prior &&
-    !['PROCESSING', 'FAILED_PARSING', 'FAILED_PERSISTENCE'].includes(prior.processing_status)
-  )
-    return { status: 'DUPLICATE', complaintId: prior.complaint_id ?? undefined }
-  if (!prior)
+    .first<{ gmail_message_id: string }>()
+  if (!priorMessage)
     await db
       .prepare(
         `INSERT INTO gmail_messages(gmail_message_id,gmail_thread_id,internal_date,sender,recipients,subject,message_id_header,in_reply_to,references_header,processing_status,first_seen_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,'PROCESSING',?,?)`,
@@ -498,7 +562,36 @@ export async function ingestEmailMessage(
       )
       .bind(now, message.id)
       .run()
+
+  // Stage 2 — processing lease. Expired leases are resumable; a live lease means another
+  // worker owns this message right now.
+  const lease = await foundation.acquireProcessingLease(
+    message.id,
+    'mail-intake',
+    now,
+    INTAKE_LEASE_MS,
+    { normalizationVersion: NORMALIZATION_VERSION },
+  )
+  if (!lease) return { status: 'IN_PROGRESS' }
+
+  const commitEvent = (
+    event: Omit<
+      CanonicalEventCommit,
+      'eventId' | 'sourceId' | 'processingRunId' | 'eventVersion' | 'ingestionMode' | 'validatedAt'
+    >,
+  ) =>
+    foundation.commitCanonicalEvent({
+      ...event,
+      eventId: crypto.randomUUID(),
+      sourceId: message.id,
+      processingRunId: lease.runId,
+      eventVersion: MAIL_EVENT_VERSION,
+      ingestionMode,
+      validatedAt: now,
+    })
+
   try {
+    // Stage 3 — deterministic normalization (no model calls; GPT stage stays stubbed).
     const extraction = extractComplaint(message)
     if (!extraction.isComplaint) {
       await db
@@ -508,27 +601,28 @@ export async function ingestEmailMessage(
         .bind(now, now, message.id)
         .run()
       await recordIntegrationEvent(db, 'MESSAGE_IGNORED', message.id, 'IGNORED', 'NOT_COMPLAINT')
+      await commitEvent({
+        eventType: 'NON_ACTIONABLE',
+        payload: { reason: 'NOT_COMPLAINT' },
+        occurredAt: message.internalDate,
+      })
+      await foundation.finishProcessing(lease, 'NON_ACTIONABLE', now)
       return { status: 'IGNORED' }
     }
-    const threaded = await db
-      .prepare(
-        `SELECT complaint_id FROM gmail_messages WHERE gmail_thread_id=? AND complaint_id IS NOT NULL ORDER BY first_seen_at LIMIT 1`,
-      )
-      .bind(message.threadId)
-      .first<{ complaint_id: string }>()
-    const referenced = extraction.externalCaseId
-      ? await db
-          .prepare('SELECT id FROM complaints WHERE lower(external_case_id)=lower(?)')
-          .bind(extraction.externalCaseId)
-          .first<{ id: string }>()
-      : null
-    // A supplied business case identity is authoritative. Conversation identity is only a hint
-    // when no case/reference ID exists and can never override a case ID.
-    const existingId = extraction.externalCaseId ? referenced?.id : threaded?.complaint_id
-    if (existingId) {
+
+    // Stage 4 — deterministic reconciliation. Case ID outranks conversation hints, always.
+    const identity = await foundation.resolveComplaintIdentity(
+      extraction.externalCaseId,
+      'MICROSOFT_GRAPH',
+      GRAPH_MAILBOX_KEY,
+      message.threadId,
+    )
+
+    if (identity.basis === 'EXACT_CASE_ID' || identity.basis === 'CONVERSATION_HINT') {
+      const complaintId = identity.complaintId
       const row = await db
         .prepare('SELECT follow_ups FROM complaints WHERE id=?')
-        .bind(existingId)
+        .bind(complaintId)
         .first<{ follow_ups: string }>()
       const followUps = row?.follow_ups ? (JSON.parse(row.follow_ups) as unknown[]) : []
       followUps.push({
@@ -539,63 +633,137 @@ export async function ingestEmailMessage(
       await db.batch([
         db
           .prepare('UPDATE complaints SET follow_ups=?,updated_at=? WHERE id=?')
-          .bind(JSON.stringify(followUps), now, existingId),
+          .bind(JSON.stringify(followUps), now, complaintId),
         db
           .prepare(
             `UPDATE gmail_messages SET complaint_id=?,processing_status='FOLLOW_UP',is_follow_up=1,acknowledgment_status='NOT_APPLICABLE',processed_at=?,updated_at=? WHERE gmail_message_id=?`,
           )
-          .bind(existingId, now, now, message.id),
+          .bind(complaintId, now, now, message.id),
         db
           .prepare(
             `INSERT INTO complaint_events(id,complaint_id,event_type,actor,timestamp,metadata) VALUES(?,?,'FOLLOW_UP_RECEIVED','microsoft-graph',?,?)`,
           )
           .bind(
             crypto.randomUUID(),
-            existingId,
+            complaintId,
             now,
             JSON.stringify({ emailMessageId: message.id, provider: 'MICROSOFT_GRAPH' }),
           ),
       ])
       await recordIntegrationEvent(db, 'FOLLOW_UP_INGESTED', message.id, 'SUCCESS')
-      return { status: 'FOLLOW_UP', complaintId: existingId }
+      await commitEvent({
+        eventType: 'FOLLOW_UP',
+        complaintId,
+        externalCaseId: extraction.externalCaseId,
+        payload: { linkageBasis: identity.basis },
+        occurredAt: message.internalDate,
+        complaintSource: {
+          id: crypto.randomUUID(),
+          role: 'FOLLOW_UP',
+          linkageBasis: identity.basis,
+          materialUpdate: true,
+        },
+      })
+      await foundation.finishProcessing(lease, 'COMPLETED', now)
+      return { status: 'FOLLOW_UP', complaintId }
     }
-    const route = await resolveStore(db, extraction)
-    const state = await loadState(db)
-    const result = createComplaint(
-      state,
-      {
-        externalCaseId: extraction.externalCaseId ?? `MSGRAPH-${message.id}`,
-        storeNumber: route.storeNumber ?? 'UNROUTED',
-        subject: message.subject,
-        complaintText: extraction.details || '(No complaint body supplied)',
-        category: extraction.category,
-        severity: extraction.severity,
-      },
-      message.internalDate,
-      { source: 'MICROSOFT_GRAPH', actor: 'microsoft-graph', acknowledged: false },
-    )
-    Object.assign(result.complaint, {
-      source: 'MICROSOFT_GRAPH',
-      gmailMessageId: message.id,
-      gmailThreadId: message.threadId,
-      sourceSender: message.sender,
-      customerName: extraction.customerName,
-      customerEmail: extraction.customerEmail,
-      customerPhone: extraction.customerPhone,
-      occurrenceAt: extraction.occurrenceAt,
-      acknowledgementStatus: 'DISABLED',
-      routingReason: route.reason,
-    } satisfies Partial<Complaint>)
-    await persistState(db, result.state)
-    const status: EmailProcessingStatus = result.complaint.storeId ? 'PROCESSED' : 'ROUTING_REVIEW'
+
+    if (identity.basis === 'NEW_CASE_ID' && extraction.externalCaseId) {
+      // The case ID came out of the message itself: a real business identity, never fabricated.
+      const caseId = extraction.externalCaseId
+      const route = await resolveStore(db, extraction)
+      const state = await loadState(db)
+      const result = createComplaint(
+        state,
+        {
+          externalCaseId: caseId,
+          storeNumber: route.storeNumber ?? 'UNROUTED',
+          subject: message.subject,
+          complaintText: extraction.details || '(No complaint body supplied)',
+          category: extraction.category,
+          severity: extraction.severity,
+        },
+        message.internalDate,
+        { source: 'MICROSOFT_GRAPH', actor: 'microsoft-graph', acknowledged: false },
+      )
+      Object.assign(result.complaint, {
+        source: 'MICROSOFT_GRAPH',
+        gmailMessageId: message.id,
+        gmailThreadId: message.threadId,
+        sourceSender: message.sender,
+        customerName: extraction.customerName,
+        customerEmail: extraction.customerEmail,
+        customerPhone: extraction.customerPhone,
+        occurrenceAt: extraction.occurrenceAt,
+        acknowledgementStatus: 'DISABLED',
+        routingReason: route.reason,
+      } satisfies Partial<Complaint>)
+      await persistState(db, result.state)
+      const status: EmailProcessingStatus = result.complaint.storeId
+        ? 'PROCESSED'
+        : 'ROUTING_REVIEW'
+      await db
+        .prepare(
+          `UPDATE gmail_messages SET complaint_id=?,processing_status=?,processing_detail=?,acknowledgment_status='PENDING',processed_at=?,updated_at=? WHERE gmail_message_id=?`,
+        )
+        .bind(result.complaint.id, status, route.reason, now, now, message.id)
+        .run()
+      await recordIntegrationEvent(db, 'MESSAGE_INGESTED', message.id, 'SUCCESS', status)
+      await commitEvent({
+        eventType: 'NEW_CASE',
+        complaintId: result.complaint.id,
+        externalCaseId: caseId,
+        canonicalStoreNumber: route.storeNumber,
+        payload: {
+          linkageBasis: 'NEW_CASE_ID',
+          routingReason: route.reason,
+          category: extraction.category,
+          severity: extraction.severity,
+        },
+        occurredAt: message.internalDate,
+        complaintSource: {
+          id: crypto.randomUUID(),
+          role: 'INITIAL',
+          linkageBasis: 'NEW_CASE_ID',
+          materialUpdate: true,
+        },
+      })
+      await foundation.finishProcessing(lease, 'COMPLETED', now)
+      return { status, complaintId: result.complaint.id }
+    }
+
+    // No trustworthy external case ID and no conversation link: reviewable provisional
+    // intake. No complaint is created and no business identity is invented; a human
+    // resolves the identity from the review item.
     await db
       .prepare(
-        `UPDATE gmail_messages SET complaint_id=?,processing_status=?,processing_detail=?,acknowledgment_status='PENDING',processed_at=?,updated_at=? WHERE gmail_message_id=?`,
+        `UPDATE gmail_messages SET processing_status='REVIEW_REQUIRED',processing_detail='IDENTITY_UNRESOLVED',processed_at=?,updated_at=? WHERE gmail_message_id=?`,
       )
-      .bind(result.complaint.id, status, route.reason, now, now, message.id)
+      .bind(now, now, message.id)
       .run()
-    await recordIntegrationEvent(db, 'MESSAGE_INGESTED', message.id, 'SUCCESS', status)
-    return { status, complaintId: result.complaint.id }
+    await recordIntegrationEvent(
+      db,
+      'MESSAGE_INGESTION_REVIEW',
+      message.id,
+      'REVIEW',
+      'IDENTITY_UNRESOLVED',
+    )
+    await commitEvent({
+      eventType: 'REVIEW_REQUIRED',
+      payload: {
+        reason: 'IDENTITY_UNRESOLVED',
+        subject: message.subject,
+        sender: message.sender,
+      },
+      occurredAt: message.internalDate,
+      review: {
+        id: crypto.randomUUID(),
+        reasonCode: 'IDENTITY_UNRESOLVED',
+        disagreementFlags: [],
+      },
+    })
+    await foundation.finishProcessing(lease, 'REVIEW_REQUIRED', now)
+    return { status: 'REVIEW_REQUIRED' }
   } catch (error) {
     await db
       .prepare(
@@ -609,6 +777,12 @@ export async function ingestEmailMessage(
       message.id,
       'FAILED',
       'FAILED_PERSISTENCE',
+    )
+    await foundation.finishProcessing(
+      lease,
+      'RETRY_WAIT',
+      now,
+      error instanceof Error ? error.name : 'UNKNOWN',
     )
     throw error
   }

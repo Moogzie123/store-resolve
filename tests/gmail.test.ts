@@ -444,7 +444,7 @@ describe('durable Gmail ingestion and acknowledgment idempotency', () => {
     ).resolves.toEqual({ locked_until: '9999-12-30T23:59:59.999Z' })
   })
 
-  it('persists routing review and ignored states without inventing a store', async () => {
+  it('routes identity-unresolved mail to human review without inventing a case identity', async () => {
     const review = await ingestGmailMessage(
       db,
       normalized({
@@ -453,7 +453,8 @@ describe('durable Gmail ingestion and acknowledgment idempotency', () => {
         textBody: 'Customer complaint with no location.',
       }),
     )
-    expect(review.status).toBe('ROUTING_REVIEW')
+    expect(review.status).toBe('REVIEW_REQUIRED')
+    expect(review.complaintId).toBeUndefined()
     const ignored = await ingestGmailMessage(
       db,
       normalized({
@@ -465,9 +466,17 @@ describe('durable Gmail ingestion and acknowledgment idempotency', () => {
     )
     expect(ignored.status).toBe('IGNORED')
     const state = await loadState(db)
-    expect(
-      state.complaints.find((complaint) => complaint.id === review.complaintId)?.storeId,
-    ).toBeUndefined()
+    expect(state.complaints).toHaveLength(0)
+    const items = await db
+      .prepare('SELECT status,reason_code,complaint_id FROM mail_review_items')
+      .all<{ status: string; reason_code: string; complaint_id: string | null }>()
+    expect(items.results).toEqual([
+      { status: 'OPEN', reason_code: 'IDENTITY_UNRESOLVED', complaint_id: null },
+    ])
+    const fabricated = await db
+      .prepare(`SELECT COUNT(*) AS count FROM complaints WHERE external_case_id LIKE 'MSGRAPH-%'`)
+      .first<{ count: number }>()
+    expect(fabricated?.count).toBe(0)
   })
 
   it('keeps acknowledgment disabled and sends at most once after explicit enablement', async () => {
