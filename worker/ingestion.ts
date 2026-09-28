@@ -7,8 +7,21 @@ import { EmailProviderError } from './email-provider'
 import {
   D1MailFoundationRepository,
   type CanonicalEventCommit,
+  type IdentityResolutionSignals,
   type IngestionMode,
 } from './mail-foundation'
+import {
+  DisabledModelTransport,
+  OpenAiMailInterpreter,
+  buildInterpretationInput,
+  interpretWithConfig,
+  loadMailInterpretationConfig,
+  recordInterpretation,
+  type InterpretationStoreResolution,
+  type MailInterpretationConfig,
+  type MailInterpretationResult,
+  type MailInterpreter,
+} from './mail-interpretation'
 import {
   isApprovedPilotMessageMetadata,
   maskGraphIdentifier,
@@ -42,6 +55,8 @@ export interface ComplaintExtraction {
   severity: Severity
   occurrenceAt?: string
   details: string
+  /** Which deterministic branches fired, in evaluation order (Phase B evidence). */
+  extractionRules: string[]
 }
 
 const compact = (value: string) => value.replace(/\s+/g, ' ').trim()
@@ -53,54 +68,70 @@ const first = (value: string, pattern: RegExp) => value.match(pattern)?.[1]?.tri
 
 export function extractComplaint(message: NormalizedEmailMessage): ComplaintExtraction {
   const combined = `${message.subject}\n${message.textBody}`
-  const isComplaint =
-    /\b(complaint|guest concern|customer concern|customer issue|case id|reference id)\b/i.test(
-      combined,
-    )
-  const category = /clean|sanit|bathroom|dirty/i.test(combined)
-    ? 'Cleanliness'
-    : /staff|employee|service|rude|wait/i.test(combined)
-      ? 'Service'
-      : /food|drink|coffee|order|product/i.test(combined)
-        ? 'Product quality'
-        : 'Other'
-  const severity: Severity = /injur|hospital|allerg|threat|violence|fire/i.test(combined)
-    ? 'CRITICAL'
-    : /health|safety|contamin|foreign object/i.test(combined)
-      ? 'HIGH'
-      : /refund|repeat|multiple|escalat/i.test(combined)
-        ? 'MEDIUM'
-        : 'LOW'
+  const rules: string[] = []
+  const match = (text: string, pattern: RegExp, rule: string) => {
+    const value = first(text, pattern)
+    if (value) rules.push(rule)
+    return value
+  }
+  const test = (pattern: RegExp, rule: string) => {
+    const hit = pattern.test(combined)
+    if (hit) rules.push(rule)
+    return hit
+  }
+  const isComplaint = test(
+    /\b(complaint|guest concern|customer concern|customer issue|case id|reference id)\b/i,
+    'IS_COMPLAINT_KEYWORD',
+  )
+  let category: string
+  if (test(/clean|sanit|bathroom|dirty/i, 'CATEGORY_CLEANLINESS')) category = 'Cleanliness'
+  else if (test(/staff|employee|service|rude|wait/i, 'CATEGORY_SERVICE')) category = 'Service'
+  else if (test(/food|drink|coffee|order|product/i, 'CATEGORY_PRODUCT')) category = 'Product quality'
+  else {
+    rules.push('CATEGORY_OTHER')
+    category = 'Other'
+  }
+  let severity: Severity
+  if (test(/injur|hospital|allerg|threat|violence|fire/i, 'SEVERITY_CRITICAL')) severity = 'CRITICAL'
+  else if (test(/health|safety|contamin|foreign object/i, 'SEVERITY_HIGH')) severity = 'HIGH'
+  else if (test(/refund|repeat|multiple|escalat/i, 'SEVERITY_MEDIUM')) severity = 'MEDIUM'
+  else {
+    rules.push('SEVERITY_LOW')
+    severity = 'LOW'
+  }
   return {
     isComplaint,
     externalCaseId:
-      first(
+      match(
         combined,
         /(?:^|\n)\s*(?:complaint\s+reference|case|complaint|reference|ref)\s*(?:id|number|no\.?|#)\s*[:#-]?\s*([A-Z0-9][A-Z0-9-]{2,50})/im,
+        'CASE_ID_LINE_ANCHORED',
       ) ??
-      first(combined, /\b(?:case|reference)\s*[:#-]\s*([A-Z0-9][A-Z0-9-]{2,50})/i) ??
-      first(combined, /\bDBI\s+Case\s*#\s*\(\s*([A-Z0-9][A-Z0-9-]{2,50})\s*\)/i),
+      match(combined, /\b(?:case|reference)\s*[:#-]\s*([A-Z0-9][A-Z0-9-]{2,50})/i, 'CASE_ID_INLINE') ??
+      match(combined, /\bDBI\s+Case\s*#\s*\(\s*([A-Z0-9][A-Z0-9-]{2,50})\s*\)/i, 'CASE_ID_DBI_PARENS'),
     storeNumber:
-      first(combined, /\b(?:store|location)\s*(?:number|no\.?|#)?\s*[:#-]?\s*(\d{3,8})\b/i) ??
-      first(combined, /\b(\d{3,8})-DD\b/i),
-    locationHint: first(combined, /\b(?:store address|location|address)\s*:\s*([^\n]{4,160})/i),
-    customerName: first(combined, /\b(?:customer|guest)\s*name\s*:\s*([^\n]{2,100})/i),
-    customerEmail: first(combined, /\b(?:customer|guest)\s*email\s*:\s*([^\s<>]+@[^\s<>]+)/i),
-    customerPhone: first(combined, /\b(?:customer|guest)\s*phone\s*:\s*([+()\d .-]{7,25})/i),
-    occurrenceAt: first(
+      match(combined, /\b(?:store|location)\s*(?:number|no\.?|#)?\s*[:#-]?\s*(\d{3,8})\b/i, 'STORE_NUMBER_LABELED') ??
+      match(combined, /\b(\d{3,8})-DD\b/i, 'STORE_NUMBER_DD_SUFFIX'),
+    locationHint: match(combined, /\b(?:store address|location|address)\s*:\s*([^\n]{4,160})/i, 'LOCATION_HINT'),
+    customerName: match(combined, /\b(?:customer|guest)\s*name\s*:\s*([^\n]{2,100})/i, 'CUSTOMER_NAME'),
+    customerEmail: match(combined, /\b(?:customer|guest)\s*email\s*:\s*([^\s<>]+@[^\s<>]+)/i, 'CUSTOMER_EMAIL'),
+    customerPhone: match(combined, /\b(?:customer|guest)\s*phone\s*:\s*([+()\d .-]{7,25})/i, 'CUSTOMER_PHONE'),
+    occurrenceAt: match(
       combined,
       /\b(?:incident|occurrence)\s*(?:date|time)?\s*:\s*([^\n]{4,80})/i,
+      'OCCURRENCE_AT',
     ),
     category,
     severity,
     details: message.textBody.trim().slice(0, 20_000),
+    extractionRules: rules,
   }
 }
 
 async function resolveStore(
   db: D1Database,
   extraction: ComplaintExtraction,
-): Promise<{ storeNumber?: string; reason: string }> {
+): Promise<{ storeNumber?: string; reason: InterpretationStoreResolution['reason'] }> {
   if (extraction.storeNumber) {
     const exact = await db
       .prepare('SELECT dunkin_store_number FROM stores WHERE dunkin_store_number=? AND active=1')
@@ -461,21 +492,32 @@ export async function ingestSinglePilotComplaint(
 // identity is the extracted Dunkin case ID, which always outranks conversation hints.
 // A message with no resolvable identity NEVER fabricates a business case ID: it becomes
 // a reviewable provisional intake (mail_review_items, OPEN) for a human to resolve.
-// The GPT interpretation stage stays stubbed: deterministic stages only, no model calls.
+// Stage 3b (structured interpretation) exists but is disabled by default and its model
+// transport is stubbed: deterministic stages only, no model calls, no live API spend.
 
 const GRAPH_MAILBOX_KEY = 'production'
 const INTAKE_LEASE_MS = 5 * 60_000
 const NORMALIZATION_VERSION = 'deterministic.v1'
 const MAIL_EVENT_VERSION = 'mail-event.v1'
 
+export interface IngestEmailMessageOptions {
+  ingestionMode?: IngestionMode
+  /** Overrides the interpreter instance (tests inject a fake; default uses the stubbed transport). */
+  interpreter?: MailInterpreter
+  /** Overrides the settings-table config (tests inject enabled configs directly). */
+  interpretationConfig?: MailInterpretationConfig
+}
+
 export async function ingestEmailMessage(
   db: D1Database,
   message: NormalizedEmailMessage,
-  options: { ingestionMode?: IngestionMode } = {},
+  options: IngestEmailMessageOptions = {},
 ): Promise<{ status: EmailProcessingStatus; complaintId?: string }> {
   const now = new Date().toISOString()
   const ingestionMode = options.ingestionMode ?? 'LIVE'
   const foundation = new D1MailFoundationRepository(db)
+  const interpConfig =
+    options.interpretationConfig ?? (await loadMailInterpretationConfig(db))
 
   // Stage 1 — immutable source persistence. INSERT OR IGNORE on the transport identity:
   // a duplicate delivery can never create a second source row.
@@ -591,7 +633,7 @@ export async function ingestEmailMessage(
     })
 
   try {
-    // Stage 3 — deterministic normalization (no model calls; GPT stage stays stubbed).
+    // Stage 3 — deterministic normalization (no model calls in this stage).
     const extraction = extractComplaint(message)
     if (!extraction.isComplaint) {
       await db
@@ -610,12 +652,45 @@ export async function ingestEmailMessage(
       return { status: 'IGNORED' }
     }
 
+    // Stage 3b — structured interpretation (shadow / review-only). Skipped entirely
+    // unless mail_interpretation_enabled='true'. Architectural cost/privacy boundary:
+    // only deterministic complaint candidates reach the model — non-complaint mail
+    // returned IGNORED above and can never get here (interpretWithConfig refuses it
+    // too, as a second layer). The interpreter can only produce records and review
+    // signals: never complaints, merges, mappings, or sends.
+    // Model-level failures become ABSTAINED results; the pipeline continues
+    // deterministically either way.
+    let interpretation: MailInterpretationResult | undefined
+    let storeRoute: { storeNumber?: string; reason: InterpretationStoreResolution['reason'] } | undefined
+    if (interpConfig.enabled && extraction.isComplaint) {
+      storeRoute = await resolveStore(db, extraction)
+      const interpretationInput = buildInterpretationInput(
+        message,
+        extraction,
+        storeRoute,
+        interpConfig,
+        GRAPH_MAILBOX_KEY,
+      )
+      const interpreter =
+        options.interpreter ?? new OpenAiMailInterpreter(interpConfig, new DisabledModelTransport())
+      interpretation = await interpretWithConfig(interpreter, interpretationInput, interpConfig)
+      if (!interpretation.skipped)
+        await recordInterpretation(db, lease.runId, interpretationInput, interpretation)
+    }
+
     // Stage 4 — deterministic reconciliation. Case ID outranks conversation hints, always.
+    // Interpretation signals ride along as review-only signals; they can never create
+    // or override an identity (see resolveComplaintIdentity).
+    const identitySignals: IdentityResolutionSignals = {
+      modelSuggestedCaseId: interpretation?.output?.externalCaseId ?? null,
+      disagreementCodes: interpretation?.disagreements.map((disagreement) => disagreement.code) ?? [],
+    }
     const identity = await foundation.resolveComplaintIdentity(
       extraction.externalCaseId,
       'MICROSOFT_GRAPH',
       GRAPH_MAILBOX_KEY,
       message.threadId,
+      identitySignals,
     )
 
     if (identity.basis === 'EXACT_CASE_ID' || identity.basis === 'CONVERSATION_HINT') {
@@ -671,7 +746,7 @@ export async function ingestEmailMessage(
     if (identity.basis === 'NEW_CASE_ID' && extraction.externalCaseId) {
       // The case ID came out of the message itself: a real business identity, never fabricated.
       const caseId = extraction.externalCaseId
-      const route = await resolveStore(db, extraction)
+      const route = storeRoute ?? (await resolveStore(db, extraction))
       const state = await loadState(db)
       const result = createComplaint(
         state,
@@ -734,7 +809,9 @@ export async function ingestEmailMessage(
 
     // No trustworthy external case ID and no conversation link: reviewable provisional
     // intake. No complaint is created and no business identity is invented; a human
-    // resolves the identity from the review item.
+    // resolves the identity from the review item. A model-suggested case ID, if any,
+    // rides along as an explicitly unverified hint — never as an identity.
+    const reviewSignals = identity.reviewSignals
     await db
       .prepare(
         `UPDATE gmail_messages SET processing_status='REVIEW_REQUIRED',processing_detail='IDENTITY_UNRESOLVED',processed_at=?,updated_at=? WHERE gmail_message_id=?`,
@@ -754,12 +831,18 @@ export async function ingestEmailMessage(
         reason: 'IDENTITY_UNRESOLVED',
         subject: message.subject,
         sender: message.sender,
+        ...(reviewSignals?.suggestedCaseId
+          ? {
+              modelSuggestedCaseId: reviewSignals.suggestedCaseId,
+              modelSuggestedCaseIdNote: 'UNVERIFIED_MODEL_SUGGESTION_NOT_IDENTITY',
+            }
+          : {}),
       },
       occurredAt: message.internalDate,
       review: {
         id: crypto.randomUUID(),
         reasonCode: 'IDENTITY_UNRESOLVED',
-        disagreementFlags: [],
+        disagreementFlags: reviewSignals?.disagreementCodes ?? [],
       },
     })
     await foundation.finishProcessing(lease, 'REVIEW_REQUIRED', now)
