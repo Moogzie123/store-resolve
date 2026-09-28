@@ -23,6 +23,54 @@ const flagsOf = (item: ReviewQueueItem): string[] => {
   return Array.isArray(parsed) ? parsed.map(String) : []
 }
 
+// Plain-language translations of review reason codes for family reviewers.
+// The codes stay in the database; humans see these.
+const REASON_COPY: Record<string, { badge: string; why: string }> = {
+  STORE_UNVERIFIED: {
+    badge: 'Check the store',
+    why: "We couldn't confirm which store this is about — please verify before acting.",
+  },
+  SEVERITY_MISMATCH: {
+    badge: 'Check the urgency',
+    why: 'Our read of how urgent this is needs a second look.',
+  },
+  NEEDS_RUN: {
+    badge: 'Not read yet',
+    why: "This message hasn't been reviewed by the system yet.",
+  },
+  STORE_NOT_CONFIGURED: {
+    badge: 'Store not set up',
+    why: 'The store mentioned here is not in the system.',
+  },
+  IDENTITY_UNRESOLVED: {
+    badge: 'Unknown sender',
+    why: "We couldn't tell who sent this.",
+  },
+}
+
+const plainReason = (code: unknown): string => {
+  const key = String(code ?? '')
+  return (
+    REASON_COPY[key]?.badge ??
+    key
+      .toLowerCase()
+      .split('_')
+      .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
+      .join(' ')
+  )
+}
+
+const reasonWhy = (code: unknown): string =>
+  REASON_COPY[String(code ?? '')]?.why ?? 'This needs a human to take a look.'
+
+const formatWhen = (value: unknown): string => {
+  if (value === null || value === undefined || value === '') return ''
+  const d = new Date(String(value))
+  return Number.isNaN(d.getTime())
+    ? String(value)
+    : d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+}
+
 function DetailView({
   detail,
   users,
@@ -68,34 +116,23 @@ function DetailView({
         <div>
           <h3>{String(detail.subject ?? '(no subject)')}</h3>
           <span className="muted">
-            {String(detail.sender_address ?? '')} · {String(detail.received_at ?? '')}
+            {String(detail.sender_address ?? '')} · {formatWhen(detail.received_at)}
           </span>
         </div>
-        <span className="badge warning">{String(detail.reason_code ?? "")}</span>
+        <span className="badge warning">{plainReason(detail.reason_code)}</span>
       </div>
-      <div className="kv-grid">
-        {kv('Message ID', detail.provider_message_id)}
-        {kv('Conversation', detail.conversation_id)}
-        {kv('Internet message ID', detail.internet_message_id)}
-        {kv('Model', detail.interpretation_model)}
-        {kv('Prompt', detail.interpretation_prompt_version)}
-        {kv('Model confidence', detail.interpretation_confidence)}
-        {kv('Run status', detail.run_status)}
-      </div>
-      {interp && typeof interp === 'object' && (
-        <div className="kv-grid">
-          <h4>Model extraction (review-only — never identity)</h4>
-          {kv('Suggested case ID', interp.externalCaseId)}
-          {kv('Suggested store', interp.storeNumber)}
-          {kv('Category', interp.issueCategory)}
-          {kv('Urgency', interp.urgency)}
-          {kv('Summary', interp.summary)}
-        </div>
+      {typeof interp?.summary === 'string' && interp.summary.trim() !== '' && (
+        <p className="review-summary">{String(interp.summary)}</p>
       )}
       <div className="kv-grid">
-        <h4>Deterministic evidence</h4>
-        <pre className="json">{JSON.stringify(evidence ?? normalized ?? {}, null, 2)}</pre>
+        <h4>Our read — please verify</h4>
+        {kv('Store', interp?.storeNumber)}
+        {kv('Category', interp?.issueCategory)}
+        {kv('Urgency', interp?.urgency)}
       </div>
+      <p className="muted review-why">
+        <strong>Why you're seeing this:</strong> {reasonWhy(detail.reason_code)}
+      </p>
       {isAdmin && (
         <div className="action-row">
           <input
@@ -162,6 +199,19 @@ function DetailView({
           </button>
         </div>
       )}
+      <details className="tech-details">
+        <summary>Technical details</summary>
+        <div className="kv-grid">
+          {kv('Message ID', detail.provider_message_id)}
+          {kv('Conversation', detail.conversation_id)}
+          {kv('Internet message ID', detail.internet_message_id)}
+          {kv('Suggested case ID', interp?.externalCaseId)}
+          {kv('Model', detail.interpretation_model)}
+          {kv('Model confidence', detail.interpretation_confidence)}
+          {kv('Run status', detail.run_status)}
+        </div>
+        <pre className="json">{JSON.stringify(evidence ?? normalized ?? {}, null, 2)}</pre>
+      </details>
     </div>
   )
 }
@@ -251,7 +301,7 @@ export default function ReviewQueue({
                       <span>{item.sender_address}</span>
                     </td>
                     <td>
-                      <span className="badge warning">{item.reason_code}</span>
+                      <span className="badge warning">{plainReason(item.reason_code)}</span>
                     </td>
                     <td>
                       {flagsOf(item).length > 0 ? (
@@ -262,7 +312,7 @@ export default function ReviewQueue({
                         <span className="muted">—</span>
                       )}
                     </td>
-                    <td>{item.received_at}</td>
+                    <td>{formatWhen(item.received_at)}</td>
                   </tr>
                 ))}
               </tbody>

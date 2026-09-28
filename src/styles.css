@@ -1357,3 +1357,28 @@ pre.json {
   border: 1px solid #fca5a5;
   color: #b91c1c;
 }
+.review-summary {
+  font-size: 15px;
+  line-height: 1.55;
+  margin: 2px 0 4px;
+  color: #111827;
+}
+.review-why {
+  font-size: 13px;
+  margin: 10px 0 0;
+}
+.review-why strong {
+  color: #374151;
+}
+.tech-details {
+  margin-top: 16px;
+  border-top: 1px solid #e5e7eb;
+  padding-top: 4px;
+}
+.tech-details summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: #6b7280;
+  padding: 8px 0;
+  list-style-position: inside;
+}
