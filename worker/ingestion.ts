@@ -79,10 +79,15 @@ export function extractComplaint(message: NormalizedEmailMessage): ComplaintExtr
     if (hit) rules.push(rule)
     return hit
   }
-  const isComplaint = test(
-    /\b(complaint|guest concern|customer concern|customer issue|case id|reference id)\b/i,
-    'IS_COMPLAINT_KEYWORD',
-  )
+  const isComplaint =
+    test(
+      /\b(complaint|guest concern|customer concern|customer issue|case id|reference id|foreign object|food poison|allerg|injury|not happy|unhappy|disappointed|disgusting)\b/i,
+      'IS_COMPLAINT_KEYWORD',
+    ) ||
+    // "Case: DD-2024" / "Case #XYZ" style references are complaint identity
+    // signals even without the word "complaint" (recall matters: a missed
+    // complaint vanishes, an over-triaged one gets human review).
+    test(/\bcase\s*[:#]\s*[A-Z0-9][A-Z0-9-]{1,}/i, 'IS_CASE_REFERENCE')
   let category: string
   if (test(/clean|sanit|bathroom|dirty/i, 'CATEGORY_CLEANLINESS')) category = 'Cleanliness'
   else if (test(/staff|employee|service|rude|wait/i, 'CATEGORY_SERVICE')) category = 'Service'

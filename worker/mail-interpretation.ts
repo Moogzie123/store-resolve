@@ -230,13 +230,15 @@ export function validateInterpretationOutput(
     'storeNumber must be 3-8 digits or null',
   )
   const storeConfidence = get('storeConfidence')
+  // A null storeConfidence alongside a storeNumber is a signal (the model is
+  // unsure), not a schema error: disagreement detection turns it into
+  // LOW_CONFIDENCE instead of SCHEMA_VIOLATION.
   check(
     (storeNumber === null && storeConfidence === null) ||
       (storeNumber !== null &&
-        typeof storeConfidence === 'number' &&
-        storeConfidence >= 0 &&
-        storeConfidence <= 1),
-    'storeConfidence must be 0..1 when storeNumber is set, null otherwise',
+        (storeConfidence === null ||
+          (typeof storeConfidence === 'number' && storeConfidence >= 0 && storeConfidence <= 1))),
+    'storeConfidence must be 0..1 or null when storeNumber is set, null otherwise',
   )
   check(
     typeof get('issueCategory') === 'string' && CATEGORIES.includes(get('issueCategory') as InterpretationCategory),
@@ -376,6 +378,11 @@ export function detectDisagreements(
     disagreements.push({
       code: 'LOW_CONFIDENCE',
       detail: `model confidence ${output.confidence} below ${INTERPRETATION_LOW_CONFIDENCE_THRESHOLD}`,
+    })
+  if (output.storeNumber !== null && output.storeConfidence === null)
+    disagreements.push({
+      code: 'LOW_CONFIDENCE',
+      detail: `model suggested store ${output.storeNumber} with null storeConfidence; treat as uncertain`,
     })
 
   const excerpt = normalizeWhitespace(input.sourceMetadata.bodyExcerpt)
@@ -531,8 +538,8 @@ export interface ModelCompletionRequest {
   model: string
   messages: { role: 'system' | 'user'; content: string }[]
   temperature: number
-  maxTokens: number
-  responseFormat: 'json_object'
+  max_tokens: number
+  response_format: { type: 'json_object' }
 }
 
 export interface ModelCompletionResponse {
@@ -574,8 +581,8 @@ export class OpenAiMailInterpreter implements MailInterpreter {
         { role: 'user', content: JSON.stringify(input) },
       ],
       temperature: 0,
-      maxTokens: 800,
-      responseFormat: 'json_object',
+      max_tokens: 800,
+      response_format: { type: 'json_object' },
     }
   }
 
