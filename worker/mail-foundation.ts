@@ -46,8 +46,31 @@ export interface ProcessingLease {
 }
 
 export type ComplaintIdentityResult =
-  | { complaintId: string; basis: 'EXACT_CASE_ID' | 'CONVERSATION_HINT' }
-  | { complaintId?: undefined; basis: 'NEW_CASE_ID' | 'NO_IDENTITY' }
+  | {
+      complaintId: string
+      basis: 'EXACT_CASE_ID' | 'CONVERSATION_HINT'
+      reviewSignals?: IdentityReviewSignals
+    }
+  | {
+      complaintId?: undefined
+      basis: 'NEW_CASE_ID' | 'NO_IDENTITY'
+      reviewSignals?: IdentityReviewSignals
+    }
+
+/**
+ * Review-only signals from the interpretation stage. These can never create or
+ * override an identity: a model-suggested case ID is surfaced to a human as an
+ * explicitly unverified hint, and only when no identity resolved at all.
+ */
+export interface IdentityResolutionSignals {
+  modelSuggestedCaseId?: string | null
+  disagreementCodes?: string[]
+}
+
+export interface IdentityReviewSignals {
+  suggestedCaseId?: string
+  disagreementCodes: string[]
+}
 
 export interface CanonicalEventCommit {
   eventId: string
@@ -228,18 +251,38 @@ export class D1MailFoundationRepository implements MailSourceRepository, MailDom
     provider: string,
     mailboxKey: string,
     conversationId: string | undefined,
+    signals: IdentityResolutionSignals = {},
   ): Promise<ComplaintIdentityResult> {
+    // Model signals are review-only by construction: the basis below is decided by
+    // deterministic inputs alone. A suggested case ID is attached as a human hint
+    // only on the NO_IDENTITY path (provisional review); it is never an identity.
+    const withSignals = <T extends ComplaintIdentityResult>(
+      result: T,
+      allowSuggestion: boolean,
+    ): T => {
+      const disagreementCodes = signals.disagreementCodes ?? []
+      const suggestion = allowSuggestion ? signals.modelSuggestedCaseId : undefined
+      if (disagreementCodes.length === 0 && !suggestion) return result
+      return {
+        ...result,
+        reviewSignals: {
+          disagreementCodes,
+          ...(suggestion ? { suggestedCaseId: suggestion } : {}),
+        },
+      }
+    }
     const normalizedCaseId = externalCaseId?.trim()
     if (normalizedCaseId) {
       const exact = await this.db
         .prepare('SELECT id FROM complaints WHERE lower(external_case_id)=lower(?)')
         .bind(normalizedCaseId)
         .first<{ id: string }>()
-      if (exact) return { complaintId: exact.id, basis: 'EXACT_CASE_ID' }
+      if (exact)
+        return withSignals({ complaintId: exact.id, basis: 'EXACT_CASE_ID' }, false)
       // An explicit new case identity must never be overridden by a Graph conversation hint.
-      return { basis: 'NEW_CASE_ID' }
+      return withSignals({ basis: 'NEW_CASE_ID' }, false)
     }
-    if (!conversationId) return { basis: 'NO_IDENTITY' }
+    if (!conversationId) return withSignals({ basis: 'NO_IDENTITY' }, true)
     const hinted = await this.db
       .prepare(
         `SELECT cs.complaint_id
@@ -251,8 +294,8 @@ export class D1MailFoundationRepository implements MailSourceRepository, MailDom
       .bind(provider, mailboxKey, conversationId)
       .first<{ complaint_id: string }>()
     return hinted
-      ? { complaintId: hinted.complaint_id, basis: 'CONVERSATION_HINT' }
-      : { basis: 'NO_IDENTITY' }
+      ? withSignals({ complaintId: hinted.complaint_id, basis: 'CONVERSATION_HINT' }, false)
+      : withSignals({ basis: 'NO_IDENTITY' }, true)
   }
 
   async commitCanonicalEvent(input: CanonicalEventCommit): Promise<void> {
