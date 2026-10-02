@@ -431,6 +431,10 @@ function Dashboard({
   const today = state.complaints.filter(
     (c) => new Date(c.receivedAt).toDateString() === new Date().toDateString(),
   ).length
+  const me = state.users.find((u) => u.id === state.activeUserId)
+  const hour = new Date().getHours()
+  const daypart = hour < 12 ? 'morning' : hour < 18 ? 'afternoon' : 'evening'
+  const activeStores = state.stores.filter((s) => s.active).length
   const stats = [
     {
       label: 'Open complaints',
@@ -465,10 +469,15 @@ function Dashboard({
     <>
       <PageTitle
         eyebrow="Owner workspace"
-        title="Good morning, Father"
-        body="Here’s what needs attention across your seven stores."
+        title={`Good ${daypart}, ${me?.name ?? 'there'}`}
+        body={`Here’s what needs attention across your ${activeStores} stores.`}
         action={
-          <button className="primary" onClick={onCreate}>
+          <button
+            className="primary"
+            onClick={onCreate}
+            aria-label="New simulated complaint"
+            title="New simulated complaint"
+          >
             <Plus />
             New simulated complaint
           </button>
@@ -705,7 +714,7 @@ function Simulator({
 }) {
   const [form, setForm] = useState<NewComplaint>({
     externalCaseId: `DKN-${String(state.complaints.length + 1).padStart(3, '0')}`,
-    storeNumber: '41001',
+    storeNumber: '350909',
     subject: 'Service concern',
     complaintText: 'Customer reports an unhelpful interaction at the counter.',
     category: 'Customer Service',
@@ -1029,9 +1038,7 @@ function ComplaintDetail({
               </div>
               <div>
                 <dt>Routing</dt>
-                <dd>
-                  {c.routingConfidence} · {c.routingReason}
-                </dd>
+                <dd>{c.routingReason}</dd>
               </div>
             </dl>
           </section>
@@ -1053,11 +1060,18 @@ function ComplaintDetail({
               ))}
             </dl>
           </section>
-          <section className="panel notifications">
-            <h3>Notification delivery</h3>
-            {state.users
-              .filter((u) => ['father', 'uncle', 'grandfather', c.assignedManagerId].includes(u.id))
-              .map((u) => {
+          {state.users.filter(
+            (u) => u.id === c.assignedManagerId || c.notifications.some((n) => n.recipientUserId === u.id),
+          ).length > 0 && (
+            <section className="panel notifications">
+              <h3>Notification delivery</h3>
+              {state.users
+                .filter(
+                  (u) =>
+                    u.id === c.assignedManagerId ||
+                    c.notifications.some((n) => n.recipientUserId === u.id),
+                )
+                .map((u) => {
                 const n = [...c.notifications].reverse().find((x) => x.recipientUserId === u.id)
                 return (
                   <div key={u.id}>
@@ -1080,7 +1094,8 @@ function ComplaintDetail({
                   </div>
                 )
               })}
-          </section>
+            </section>
+          )}
         </aside>
       </div>
     </>
