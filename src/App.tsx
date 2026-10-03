@@ -1719,6 +1719,19 @@ function PilotControls({
             <Clock3 />
             Advance 3 days & process
           </button>
+          <button
+            className="secondary"
+            onClick={() =>
+              api
+                .processDeadlines(0)
+                .then((next) => {
+                  setState(next)
+                })
+                .catch(() => {})
+            }
+          >
+            Send pending notifications now
+          </button>
         </section>
         <section className="panel settings-card">
           <h2>Test notification</h2>
