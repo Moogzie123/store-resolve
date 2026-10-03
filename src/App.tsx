@@ -1447,16 +1447,18 @@ function PilotControls({
   providerReady: boolean
   health?: IntegrationHealth
   onSaveConfig: (config: AppState['config']) => void
-  onSendTest: (id: 'father' | 'uncle' | 'grandfather' | 'pilot-admin') => void
+  onSendTest: (id: 'father' | 'uncle' | 'grandfather' | 'pilot-admin' | 'dad') => void
   onReconcile: (providerMessageId: string) => void
   onPilotIngest: () => void
 }) {
-  const owners = state.users.filter((u) => ['father', 'uncle', 'grandfather'].includes(u.id))
+  const owners = state.users.filter((u) =>
+    ['father', 'uncle', 'grandfather', 'dad'].includes(u.id),
+  )
   const pilotAdmin = state.users.find((u) => u.recipientKind === 'PILOT_ADMIN')
   const testRecipients = pilotAdmin ? [...owners, pilotAdmin] : owners
-  const [recipient, setRecipient] = useState<'father' | 'uncle' | 'grandfather' | 'pilot-admin'>(
-    'pilot-admin',
-  )
+  const [recipient, setRecipient] = useState<
+    'father' | 'uncle' | 'grandfather' | 'pilot-admin' | 'dad'
+  >('pilot-admin')
   const [confirmed, setConfirmed] = useState(false)
   const chosen = testRecipients.find((candidate) => candidate.id === recipient)
   const recentTests = state.testNotifications

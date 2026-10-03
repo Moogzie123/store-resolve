@@ -111,7 +111,7 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(contactSchema.parse(contact)),
     }),
-  sendTest: (recipientUserId: 'father' | 'uncle' | 'grandfather' | 'pilot-admin') =>
+  sendTest: (recipientUserId: 'father' | 'uncle' | 'grandfather' | 'pilot-admin' | 'dad') =>
     request('/admin/test-notifications', stateSchema, {
       method: 'POST',
       body: JSON.stringify({ recipientUserId, confirmed: true }),
