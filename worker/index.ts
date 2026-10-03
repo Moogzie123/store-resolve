@@ -65,7 +65,7 @@ type Variables = { user: User }
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 const ownerIds = ['father', 'uncle', 'grandfather']
 const pilotAdminId = 'pilot-admin'
-const testRecipientIds = [...ownerIds, pilotAdminId]
+const testRecipientIds = [...ownerIds, pilotAdminId, 'dad']
 const jsonError = (message: string) => ({ error: message })
 const provider = (env: Bindings) =>
   new SignalWireSmsProvider({

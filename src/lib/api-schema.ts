@@ -40,7 +40,7 @@ export const contactSchema = z.object({
   active: z.boolean(),
 })
 export const testNotificationSchema = z.object({
-  recipientUserId: z.enum(['father', 'uncle', 'grandfather', 'pilot-admin']),
+  recipientUserId: z.enum(['father', 'uncle', 'grandfather', 'pilot-admin', 'dad']),
   confirmed: z.literal(true),
 })
 export const signalWireCallbackSchema = z.union([
